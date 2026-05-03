@@ -1,6 +1,3 @@
-import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
-
-const ssm = new SSMClient({ region: process.env.AWS_REGION || 'us-east-1' });
 const originId = process.env.ORIGIN_ID || '0';
 
 export const handler = async (event) => {
@@ -9,24 +6,11 @@ export const handler = async (event) => {
 
   // Health check endpoint
   if (path === '/health') {
-    try {
-      const param = await ssm.send(new GetParameterCommand({
-        Name: `/geo-routing/origin-${originId}-healthy`
-      }));
-      const healthy = param.Parameter.Value !== 'false';
-      return {
-        statusCode: healthy ? 200 : 503,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-        body: JSON.stringify({ originId, healthy, timestamp: new Date().toISOString() })
-      };
-    } catch (e) {
-      // Parameter doesn't exist = healthy by default
-      return {
-        statusCode: 200,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-        body: JSON.stringify({ originId, healthy: true, timestamp: new Date().toISOString() })
-      };
-    }
+    return {
+      statusCode: 200,
+      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      body: JSON.stringify({ originId, healthy: true, timestamp: new Date().toISOString() })
+    };
   }
 
   // Normal request

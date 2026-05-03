@@ -25,9 +25,7 @@ Health Checker Lambda (every 60s) → invokes /health on each origin
 |-----------|---------|
 | `src/viewer-request.js` | CF Function — geo-routes requests based on country → region → origin |
 | `src/test-client.html` | Interactive demo page with toggles and request simulation |
-| `lambdas/origin-handler.mjs` | Origin Lambda with `/health` endpoint (reads SSM for health state) |
 | `lambdas/health-checker.py` | Background Lambda — checks each origin's health, updates KVS |
-| `lambdas/maintenance-api.py` | API to toggle origin health state (SSM parameter) |
 
 ## AWS Resources
 
@@ -62,7 +60,6 @@ Health Checker Lambda (every 60s) → invokes /health on each origin
 2. CF Function reads KVS → routes to fallback if disabled
 3. Health Checker Lambda (background, every 60s) detects actual origin failures
 4. If origin unhealthy → updates KVS → CF routes to fallback
-5. **~5-10s edge propagation** (no SSM, no polling delay)
 
 
 ## Authentication
