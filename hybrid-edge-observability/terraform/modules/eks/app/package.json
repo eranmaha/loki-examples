@@ -1,0 +1,10 @@
+{
+  "name": "payment-api",
+  "version": "1.0.0",
+  "scripts": { "start": "node index.js" },
+  "dependencies": {
+    "@aws-sdk/dsql-signer": "^3.0.0",
+    "pg": "^8.13.0",
+    "express": "^4.21.0"
+  }
+}
