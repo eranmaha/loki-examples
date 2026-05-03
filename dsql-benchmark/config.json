@@ -1,0 +1,16 @@
+{
+  "singleRegion": {
+    "clusterId": "zntxnmjv6gxlrwznxhbmxrboza",
+    "endpoint": "zntxnmjv6gxlrwznxhbmxrboza.dsql.us-east-1.on.aws",
+    "region": "us-east-1"
+  },
+  "multiRegion": {
+    "primaryClusterId": "eftxnubwguc5c4dqr4gdvjct3e",
+    "primaryEndpoint": "eftxnubwguc5c4dqr4gdvjct3e.dsql.us-east-1.on.aws",
+    "secondaryClusterId": "5ftxnuflif62znbn33jayhvdoq",
+    "secondaryEndpoint": "5ftxnuflif62znbn33jayhvdoq.dsql.us-west-2.on.aws",
+    "primaryRegion": "us-east-1",
+    "secondaryRegion": "us-west-2",
+    "witnessRegion": "us-east-2"
+  }
+}
