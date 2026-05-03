@@ -46,7 +46,6 @@ Health Checker Lambda (every 60s) → invokes /health on each origin
 | ALB 2 | `Simple-Origi-O914SMpD40HE-731436583.us-east-1.elb.amazonaws.com` |
 | S3 Demo Bucket | `simpledynamicoriginroutings-demodemobucketb018ff5f-4qxqz6jtf4n7` |
 | CDK Stack | `SimpleDynamicOriginRoutingStack` |
-| SSM Params | `/geo-routing/origin-{0,1,2}-healthy` |
 
 ## Geo-Routing Rules
 
@@ -57,14 +56,14 @@ Health Checker Lambda (every 60s) → invokes /health on each origin
 | APAC | JP, AU, IN, SG, KR, etc. | Origin 2 |
 | Unmapped/Unknown | AQ, XX, etc. | Default (Origin 0) |
 
-## Health Check Flow
+## Routing Toggle Flow
 
-1. Test page toggle → API sets SSM param `/geo-routing/origin-X-healthy` = `false`
-2. Origin Lambda's `/health` endpoint reads SSM → returns 503
-3. Health Checker Lambda (every 60s) invokes each origin's `/health`
-4. If 503 → updates KVS `origin_X_enabled=false`
-5. CF Function reads KVS → routes to fallback origin
-6. **Zero latency impact** on normal requests (health checks are async)
+1. Test page toggle → API writes directly to KVS `origin_X_enabled`
+2. CF Function reads KVS → routes to fallback if disabled
+3. Health Checker Lambda (background, every 60s) detects actual origin failures
+4. If origin unhealthy → updates KVS → CF routes to fallback
+5. **~5-10s edge propagation** (no SSM, no polling delay)
+
 
 ## Authentication
 
