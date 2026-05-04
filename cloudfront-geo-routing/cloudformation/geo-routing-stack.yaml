@@ -189,58 +189,10 @@ Resources:
           };
 
   # ─── Lambda Function URLs (origins accessible via HTTP) ────────────────────
-  Origin0Url:
-    Type: AWS::Lambda::Url
-    Properties:
-      AuthType: NONE
-      TargetFunctionArn: !Ref Origin0Function
-      Cors:
-        AllowOrigins: ['*']
-        AllowMethods: ['GET', 'POST']
 
-  Origin1Url:
-    Type: AWS::Lambda::Url
-    Properties:
-      AuthType: NONE
-      TargetFunctionArn: !Ref Origin1Function
-      Cors:
-        AllowOrigins: ['*']
-        AllowMethods: ['GET', 'POST']
 
-  Origin2Url:
-    Type: AWS::Lambda::Url
-    Properties:
-      AuthType: NONE
-      TargetFunctionArn: !Ref Origin2Function
-      Cors:
-        AllowOrigins: ['*']
-        AllowMethods: ['GET', 'POST']
 
-  Origin0UrlPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !Ref Origin0Function
-      Action: lambda:InvokeFunctionUrl
-      Principal: '*'
-      FunctionUrlAuthType: NONE
 
-  Origin1UrlPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !Ref Origin1Function
-      Action: lambda:InvokeFunctionUrl
-      Principal: '*'
-      FunctionUrlAuthType: NONE
-
-  Origin2UrlPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !Ref Origin2Function
-      Action: lambda:InvokeFunctionUrl
-      Principal: '*'
-      FunctionUrlAuthType: NONE
-
-  # ─── SSM Parameters (health state) ────────────────────────────────────────
   Origin0HealthParam:
     Type: AWS::SSM::Parameter
     Properties:
@@ -720,18 +672,6 @@ Resources:
       SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${MaintenanceApi}/*'
 
 Outputs:
-  Origin0Url:
-    Description: Origin 0 (Americas) Function URL
-    Value: !GetAtt Origin0Url.FunctionUrl
-
-  Origin1Url:
-    Description: Origin 1 (EMEA) Function URL
-    Value: !GetAtt Origin1Url.FunctionUrl
-
-  Origin2Url:
-    Description: Origin 2 (APAC) Function URL
-    Value: !GetAtt Origin2Url.FunctionUrl
-
   MaintenanceApiUrl:
     Description: Maintenance API endpoint
     Value: !Sub 'https://${MaintenanceApi}.execute-api.${AWS::Region}.amazonaws.com/maintenance'
