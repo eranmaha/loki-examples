@@ -57,10 +57,10 @@ async function handler(event) {
   const request = event.request;
   
   // Get viewer country from CloudFront header
-  const countryCode = (request.headers['cloudfront-viewer-country'] && 
-                       request.headers['cloudfront-viewer-country'].value) || 
-                      (request.headers['x-viewer-country'] &&
-                       request.headers['x-viewer-country'].value) || '';
+  const countryCode = (request.headers['x-viewer-country'] && 
+                       request.headers['x-viewer-country'].value) || 
+                      (request.headers['cloudfront-viewer-country'] &&
+                       request.headers['cloudfront-viewer-country'].value) || '';
 
   const geoRegion = getRegionForCountry(countryCode.toUpperCase());
   let originId = geoRegion ? REGION_TO_ORIGIN[geoRegion] : null;
