@@ -1,0 +1,749 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  CloudFront Geo-Based Origin Routing with Health Checks and Synthetics Canaries.
+  Dynamic origin selection using CloudFront Functions + Key Value Store,
+  with automated health monitoring and failover.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: geo-routing-demo
+    Description: Prefix for all resource names
+  CanaryFailureThreshold:
+    Type: Number
+    Default: 5
+    Description: Number of canary failures within evaluation period to trigger failover
+  CanaryEvaluationPeriod:
+    Type: Number
+    Default: 60
+    Description: Evaluation period in seconds for canary alarms
+  AlertEmail:
+    Type: String
+    Default: ''
+    Description: Email for failover notifications (optional)
+
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, '']]
+
+Resources:
+  # ─── S3 Bucket for Canary Artifacts ───────────────────────────────────────
+  CanaryArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-canary-artifacts-${AWS::AccountId}'
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-artifacts
+            Status: Enabled
+            ExpirationInDays: 7
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # ─── SNS Topic for Alerts ─────────────────────────────────────────────────
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-alerts'
+
+  AlertSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  # ─── KVS for Origin Routing ───────────────────────────────────────────────
+  RoutingKVS:
+    Type: AWS::CloudFront::KeyValueStore
+    Properties:
+      Name: !Sub '${ProjectName}-routing-kvs'
+      Comment: Origin routing configuration and health state
+
+  # ─── Origin Lambda Execution Role ─────────────────────────────────────────
+  OriginLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-origin-lambda-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: logs-and-ssm
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/geo-routing/*'
+
+  # ─── Origin Lambdas ────────────────────────────────────────────────────────
+  Origin0Function:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-origin-0'
+      Runtime: nodejs20.x
+      Architectures: [arm64]
+      Handler: index.handler
+      Role: !GetAtt OriginLambdaRole.Arn
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          ORIGIN_ID: '0'
+      Code:
+        ZipFile: |
+          const { SSMClient, GetParameterCommand } = require("@aws-sdk/client-ssm");
+          const ssm = new SSMClient({});
+          const originId = process.env.ORIGIN_ID || '0';
+          exports.handler = async (event) => {
+            const path = event.rawPath || event.path || '/';
+            const headers = event.headers || {};
+            if (path === '/health') {
+              let healthy = true;
+              try {
+                const param = await ssm.send(new GetParameterCommand({ Name: `/geo-routing/origin-${originId}-healthy` }));
+                healthy = param.Parameter.Value !== 'false';
+              } catch (e) { healthy = true; }
+              return { statusCode: healthy ? 200 : 503, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ originId, healthy, timestamp: new Date().toISOString() }) };
+            }
+            return { statusCode: 200, headers: { 'Content-Type': 'application/json', 'X-Origin-ID': originId, 'Access-Control-Allow-Origin': '*', 'Access-Control-Expose-Headers': 'X-Origin-ID' }, body: JSON.stringify({ originId, region: headers['x-routed-region'] || 'unknown', country: headers['x-viewer-country-resolved'] || 'unknown', routedTo: headers['x-routed-origin'] || 'unknown', timestamp: new Date().toISOString() }) };
+          };
+
+  Origin1Function:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-origin-1'
+      Runtime: nodejs20.x
+      Architectures: [arm64]
+      Handler: index.handler
+      Role: !GetAtt OriginLambdaRole.Arn
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          ORIGIN_ID: '1'
+      Code:
+        ZipFile: |
+          const { SSMClient, GetParameterCommand } = require("@aws-sdk/client-ssm");
+          const ssm = new SSMClient({});
+          const originId = process.env.ORIGIN_ID || '1';
+          exports.handler = async (event) => {
+            const path = event.rawPath || event.path || '/';
+            const headers = event.headers || {};
+            if (path === '/health') {
+              let healthy = true;
+              try {
+                const param = await ssm.send(new GetParameterCommand({ Name: `/geo-routing/origin-${originId}-healthy` }));
+                healthy = param.Parameter.Value !== 'false';
+              } catch (e) { healthy = true; }
+              return { statusCode: healthy ? 200 : 503, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ originId, healthy, timestamp: new Date().toISOString() }) };
+            }
+            return { statusCode: 200, headers: { 'Content-Type': 'application/json', 'X-Origin-ID': originId, 'Access-Control-Allow-Origin': '*', 'Access-Control-Expose-Headers': 'X-Origin-ID' }, body: JSON.stringify({ originId, region: headers['x-routed-region'] || 'unknown', country: headers['x-viewer-country-resolved'] || 'unknown', routedTo: headers['x-routed-origin'] || 'unknown', timestamp: new Date().toISOString() }) };
+          };
+
+  Origin2Function:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-origin-2'
+      Runtime: nodejs20.x
+      Architectures: [arm64]
+      Handler: index.handler
+      Role: !GetAtt OriginLambdaRole.Arn
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          ORIGIN_ID: '2'
+      Code:
+        ZipFile: |
+          const { SSMClient, GetParameterCommand } = require("@aws-sdk/client-ssm");
+          const ssm = new SSMClient({});
+          const originId = process.env.ORIGIN_ID || '2';
+          exports.handler = async (event) => {
+            const path = event.rawPath || event.path || '/';
+            const headers = event.headers || {};
+            if (path === '/health') {
+              let healthy = true;
+              try {
+                const param = await ssm.send(new GetParameterCommand({ Name: `/geo-routing/origin-${originId}-healthy` }));
+                healthy = param.Parameter.Value !== 'false';
+              } catch (e) { healthy = true; }
+              return { statusCode: healthy ? 200 : 503, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ originId, healthy, timestamp: new Date().toISOString() }) };
+            }
+            return { statusCode: 200, headers: { 'Content-Type': 'application/json', 'X-Origin-ID': originId, 'Access-Control-Allow-Origin': '*', 'Access-Control-Expose-Headers': 'X-Origin-ID' }, body: JSON.stringify({ originId, region: headers['x-routed-region'] || 'unknown', country: headers['x-viewer-country-resolved'] || 'unknown', routedTo: headers['x-routed-origin'] || 'unknown', timestamp: new Date().toISOString() }) };
+          };
+
+  # ─── Lambda Function URLs (origins accessible via HTTP) ────────────────────
+  Origin0Url:
+    Type: AWS::Lambda::Url
+    Properties:
+      AuthType: NONE
+      TargetFunctionArn: !Ref Origin0Function
+      Cors:
+        AllowOrigins: ['*']
+        AllowMethods: ['GET', 'POST']
+
+  Origin1Url:
+    Type: AWS::Lambda::Url
+    Properties:
+      AuthType: NONE
+      TargetFunctionArn: !Ref Origin1Function
+      Cors:
+        AllowOrigins: ['*']
+        AllowMethods: ['GET', 'POST']
+
+  Origin2Url:
+    Type: AWS::Lambda::Url
+    Properties:
+      AuthType: NONE
+      TargetFunctionArn: !Ref Origin2Function
+      Cors:
+        AllowOrigins: ['*']
+        AllowMethods: ['GET', 'POST']
+
+  Origin0UrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Origin0Function
+      Action: lambda:InvokeFunctionUrl
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
+  Origin1UrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Origin1Function
+      Action: lambda:InvokeFunctionUrl
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
+  Origin2UrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Origin2Function
+      Action: lambda:InvokeFunctionUrl
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
+  # ─── SSM Parameters (health state) ────────────────────────────────────────
+  Origin0HealthParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /geo-routing/origin-0-healthy
+      Type: String
+      Value: 'true'
+
+  Origin1HealthParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /geo-routing/origin-1-healthy
+      Type: String
+      Value: 'true'
+
+  Origin2HealthParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /geo-routing/origin-2-healthy
+      Type: String
+      Value: 'true'
+
+  # ─── Health Checker / Failover Lambda Role ─────────────────────────────────
+  HealthCheckerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-health-checker-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: health-checker-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - cloudfront-keyvaluestore:PutKey
+                  - cloudfront-keyvaluestore:DescribeKeyValueStore
+                Resource: !GetAtt RoutingKVS.Arn
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt Origin0Function.Arn
+                  - !GetAtt Origin1Function.Arn
+                  - !GetAtt Origin2Function.Arn
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref AlertTopic
+
+  # ─── Failover Lambda (triggered by canary alarms) ─────────────────────────
+  FailoverFunction:
+    # NOTE: This function requires a Lambda layer with botocore[crt] for CloudFront KVS access.
+    # See README for layer build instructions.
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-failover'
+      Runtime: python3.9
+      Architectures: [arm64]
+      Handler: index.handler
+      Role: !GetAtt HealthCheckerRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          KVS_ARN: !GetAtt RoutingKVS.Arn
+          SNS_TOPIC: !Ref AlertTopic
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+
+          KVS_ARN = os.environ['KVS_ARN']
+          SNS_TOPIC = os.environ['SNS_TOPIC']
+          kvs = boto3.client('cloudfront-keyvaluestore')
+          sns = boto3.client('sns')
+
+          def handler(event, context):
+              """Triggered by CloudWatch Alarm via SNS. Enables/disables origin in KVS."""
+              for record in event.get('Records', []):
+                  message = json.loads(record['Sns']['Message'])
+                  alarm_name = message.get('AlarmName', '')
+                  new_state = message.get('NewStateValue', '')
+
+                  # Extract origin ID from alarm name (e.g., geo-routing-demo-canary-alarm-origin-1)
+                  origin_id = None
+                  for i in ['0', '1', '2']:
+                      if f'origin-{i}' in alarm_name:
+                          origin_id = i
+                          break
+
+                  if origin_id is None:
+                      print(f"Could not extract origin ID from alarm: {alarm_name}")
+                      return
+
+                  # ALARM = disable origin, OK = re-enable
+                  enabled = (new_state == 'OK')
+
+                  try:
+                      desc = kvs.describe_key_value_store(KvsARN=KVS_ARN)
+                      etag = desc['ETag']
+                      kvs.put_key(
+                          KvsARN=KVS_ARN,
+                          Key=f"origin_{origin_id}_enabled",
+                          Value=str(enabled).lower(),
+                          IfMatch=etag
+                      )
+                      action = 'enabled' if enabled else 'disabled'
+                      msg = f"Origin {origin_id} {action} due to alarm state: {new_state}"
+                      print(msg)
+
+                      sns.publish(
+                          TopicArn=SNS_TOPIC,
+                          Subject=f"[Geo-Routing] Origin {origin_id} {action}",
+                          Message=msg
+                      )
+                  except Exception as e:
+                      print(f"Error updating KVS: {e}")
+                      raise
+
+  FailoverPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref FailoverFunction
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref AlertTopic
+
+  FailoverSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: lambda
+      Endpoint: !GetAtt FailoverFunction.Arn
+
+  # ─── Synthetics Canary Role ────────────────────────────────────────────────
+  CanaryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-canary-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: canary-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource: !Sub '${CanaryArtifactsBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                Resource: !GetAtt CanaryArtifactsBucket.Arn
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: CloudWatchSynthetics
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: '*'
+
+  # ─── Synthetics Canaries ───────────────────────────────────────────────────
+  CanaryOrigin0:
+    Type: AWS::Synthetics::Canary
+    Properties:
+      Name: !Sub '${ProjectName}-origin-0'
+      RuntimeVersion: syn-nodejs-puppeteer-9.1
+      ArtifactS3Location: !Sub 's3://${CanaryArtifactsBucket}/${ProjectName}-origin-0'
+      ExecutionRoleArn: !GetAtt CanaryRole.Arn
+      Schedule:
+        Expression: rate(1 minute)
+      StartCanaryAfterCreation: true
+      Code:
+        Handler: index.handler
+        Script: !Sub |
+          const synthetics = require('Synthetics');
+          const log = require('SyntheticsLogger');
+          const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');
+          const lambda = new LambdaClient({});
+
+          exports.handler = async () => {
+            log.info('Invoking origin 0 health check');
+            const res = await lambda.send(new InvokeCommand({
+              FunctionName: '${Origin0Function}',
+              Payload: JSON.stringify({ rawPath: '/health', headers: {} })
+            }));
+            const payload = JSON.parse(new TextDecoder().decode(res.Payload));
+            if (payload.statusCode !== 200) {
+              throw new Error('Origin 0 unhealthy: HTTP ' + payload.statusCode);
+            }
+            log.info('Origin 0 healthy');
+          };
+      RunConfig:
+        TimeoutInSeconds: 15
+
+  CanaryOrigin1:
+    Type: AWS::Synthetics::Canary
+    Properties:
+      Name: !Sub '${ProjectName}-origin-1'
+      RuntimeVersion: syn-nodejs-puppeteer-9.1
+      ArtifactS3Location: !Sub 's3://${CanaryArtifactsBucket}/${ProjectName}-origin-1'
+      ExecutionRoleArn: !GetAtt CanaryRole.Arn
+      Schedule:
+        Expression: rate(1 minute)
+      StartCanaryAfterCreation: true
+      Code:
+        Handler: index.handler
+        Script: !Sub |
+          const synthetics = require('Synthetics');
+          const log = require('SyntheticsLogger');
+          const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');
+          const lambda = new LambdaClient({});
+
+          exports.handler = async () => {
+            log.info('Invoking origin 1 health check');
+            const res = await lambda.send(new InvokeCommand({
+              FunctionName: '${Origin1Function}',
+              Payload: JSON.stringify({ rawPath: '/health', headers: {} })
+            }));
+            const payload = JSON.parse(new TextDecoder().decode(res.Payload));
+            if (payload.statusCode !== 200) {
+              throw new Error('Origin 1 unhealthy: HTTP ' + payload.statusCode);
+            }
+            log.info('Origin 1 healthy');
+          };
+      RunConfig:
+        TimeoutInSeconds: 15
+
+  CanaryOrigin2:
+    Type: AWS::Synthetics::Canary
+    Properties:
+      Name: !Sub '${ProjectName}-origin-2'
+      RuntimeVersion: syn-nodejs-puppeteer-9.1
+      ArtifactS3Location: !Sub 's3://${CanaryArtifactsBucket}/${ProjectName}-origin-2'
+      ExecutionRoleArn: !GetAtt CanaryRole.Arn
+      Schedule:
+        Expression: rate(1 minute)
+      StartCanaryAfterCreation: true
+      Code:
+        Handler: index.handler
+        Script: !Sub |
+          const synthetics = require('Synthetics');
+          const log = require('SyntheticsLogger');
+          const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');
+          const lambda = new LambdaClient({});
+
+          exports.handler = async () => {
+            log.info('Invoking origin 2 health check');
+            const res = await lambda.send(new InvokeCommand({
+              FunctionName: '${Origin2Function}',
+              Payload: JSON.stringify({ rawPath: '/health', headers: {} })
+            }));
+            const payload = JSON.parse(new TextDecoder().decode(res.Payload));
+            if (payload.statusCode !== 200) {
+              throw new Error('Origin 2 unhealthy: HTTP ' + payload.statusCode);
+            }
+            log.info('Origin 2 healthy');
+          };
+      RunConfig:
+        TimeoutInSeconds: 15
+
+  # ─── CloudWatch Alarms (trigger failover) ──────────────────────────────────
+  CanaryAlarmOrigin0:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-canary-alarm-origin-0'
+      AlarmDescription: Origin 0 health check failures detected
+      Namespace: CloudWatchSynthetics
+      MetricName: SuccessPercent
+      Dimensions:
+        - Name: CanaryName
+          Value: !Ref CanaryOrigin0
+      Statistic: Average
+      Period: !Ref CanaryEvaluationPeriod
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: LessThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertTopic
+      OKActions:
+        - !Ref AlertTopic
+
+  CanaryAlarmOrigin1:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-canary-alarm-origin-1'
+      AlarmDescription: Origin 1 health check failures detected
+      Namespace: CloudWatchSynthetics
+      MetricName: SuccessPercent
+      Dimensions:
+        - Name: CanaryName
+          Value: !Ref CanaryOrigin1
+      Statistic: Average
+      Period: !Ref CanaryEvaluationPeriod
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: LessThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertTopic
+      OKActions:
+        - !Ref AlertTopic
+
+  CanaryAlarmOrigin2:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-canary-alarm-origin-2'
+      AlarmDescription: Origin 2 health check failures detected
+      Namespace: CloudWatchSynthetics
+      MetricName: SuccessPercent
+      Dimensions:
+        - Name: CanaryName
+          Value: !Ref CanaryOrigin2
+      Statistic: Average
+      Period: !Ref CanaryEvaluationPeriod
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: LessThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertTopic
+      OKActions:
+        - !Ref AlertTopic
+
+  # ─── Maintenance API (manual toggle) ───────────────────────────────────────
+  MaintenanceApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${ProjectName}-maintenance-api'
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins: ['*']
+        AllowMethods: [POST, OPTIONS]
+        AllowHeaders: [content-type, authorization]
+
+  MaintenanceApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref MaintenanceApi
+      StageName: '$default'
+      AutoDeploy: true
+
+  MaintenanceIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref MaintenanceApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt MaintenanceFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  MaintenanceRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref MaintenanceApi
+      RouteKey: POST /maintenance
+      Target: !Sub 'integrations/${MaintenanceIntegration}'
+
+  MaintenanceFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-maintenance-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: maintenance-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - cloudfront-keyvaluestore:PutKey
+                  - cloudfront-keyvaluestore:DescribeKeyValueStore
+                Resource: !GetAtt RoutingKVS.Arn
+              - Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/geo-routing/*'
+
+  MaintenanceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-maintenance'
+      Runtime: python3.9
+      Architectures: [arm64]
+      Handler: index.handler
+      Role: !GetAtt MaintenanceFunctionRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          KVS_ARN: !GetAtt RoutingKVS.Arn
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+
+          KVS_ARN = os.environ['KVS_ARN']
+          kvs = boto3.client('cloudfront-keyvaluestore')
+          ssm = boto3.client('ssm')
+
+          def handler(event, context):
+              headers = {
+                  "content-type": "application/json",
+                  "access-control-allow-origin": "*",
+                  "access-control-allow-methods": "POST,OPTIONS",
+                  "access-control-allow-headers": "content-type,authorization"
+              }
+              method = event.get('requestContext', {}).get('http', {}).get('method', '')
+              if method == 'OPTIONS':
+                  return {"statusCode": 200, "headers": headers, "body": ""}
+              try:
+                  body = json.loads(event.get('body', '{}'))
+                  origin_id = body.get('originId')
+                  enabled = body.get('enabled')
+                  if origin_id is None or enabled is None:
+                      return {"statusCode": 400, "headers": headers, "body": json.dumps({"error": "originId and enabled required"})}
+
+                  # Update SSM (controls /health response) and KVS (controls routing)
+                  ssm.put_parameter(Name=f"/geo-routing/origin-{origin_id}-healthy", Value=str(enabled).lower(), Type='String', Overwrite=True)
+                  desc = kvs.describe_key_value_store(KvsARN=KVS_ARN)
+                  kvs.put_key(KvsARN=KVS_ARN, Key=f"origin_{origin_id}_enabled", Value=str(enabled).lower(), IfMatch=desc['ETag'])
+
+                  return {"statusCode": 200, "headers": headers, "body": json.dumps({"success": True, "originId": origin_id, "enabled": enabled})}
+              except Exception as e:
+                  return {"statusCode": 500, "headers": headers, "body": json.dumps({"error": str(e)})}
+
+  MaintenanceFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MaintenanceFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${MaintenanceApi}/*'
+
+Outputs:
+  Origin0Url:
+    Description: Origin 0 (Americas) Function URL
+    Value: !GetAtt Origin0Url.FunctionUrl
+
+  Origin1Url:
+    Description: Origin 1 (EMEA) Function URL
+    Value: !GetAtt Origin1Url.FunctionUrl
+
+  Origin2Url:
+    Description: Origin 2 (APAC) Function URL
+    Value: !GetAtt Origin2Url.FunctionUrl
+
+  MaintenanceApiUrl:
+    Description: Maintenance API endpoint
+    Value: !Sub 'https://${MaintenanceApi}.execute-api.${AWS::Region}.amazonaws.com/maintenance'
+
+  KvsArn:
+    Description: KVS ARN (configure in CloudFront Function)
+    Value: !GetAtt RoutingKVS.Arn
+
+  CanaryArtifactsBucket:
+    Description: S3 bucket for canary artifacts
+    Value: !Ref CanaryArtifactsBucket
+
+  AlertTopicArn:
+    Description: SNS topic for failover alerts
+    Value: !Ref AlertTopic

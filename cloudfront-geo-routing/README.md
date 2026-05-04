@@ -1,88 +1,212 @@
-# CloudFront Geo-Based Origin Routing with Health Checks
+# CloudFront Geo-Based Origin Routing with Automated Health Checks
 
 ## Overview
 
-Dynamic origin selection using **CloudFront Functions + Key Value Store**, with automated health checking and failover.
+Dynamic origin selection using **CloudFront Functions + Key Value Store**, with CloudWatch Synthetics canaries for automated health monitoring and failover.
 
 ## Architecture
 
 ```
-Viewer → CloudFront → CF Function (reads KVS) → Route to origin
-                                                    ↓
-                                        Origin 0 (Americas)
-                                        Origin 1 (EMEA)
-                                        Origin 2 (APAC)
-                                        __default__ (fallback)
-
-Health Checker Lambda (every 60s) → invokes /health on each origin
-                                  → updates KVS enabled/disabled
-                                  → CF Function reads KVS next request
+                    ┌─────────────────────────┐
+                    │   CloudFront Function    │
+                    │  (reads KVS for routing) │
+                    └────────────┬────────────┘
+                                 │
+              ┌──────────────────┼──────────────────┐
+              ▼                  ▼                   ▼
+         Origin 0           Origin 1            Origin 2
+        (Americas)           (EMEA)              (APAC)
+              │                  │                   │
+              └──────────────────┼──────────────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │  Synthetics Canaries     │
+                    │  (health check /health)  │
+                    └────────────┬────────────┘
+                                 │ fails
+                    ┌────────────▼────────────┐
+                    │  CloudWatch Alarm        │
+                    │  (SuccessPercent = 0)    │
+                    └────────────┬────────────┘
+                                 │ SNS
+                    ┌────────────▼────────────┐
+                    │  Failover Lambda         │
+                    │  (updates KVS)          │
+                    └─────────────────────────┘
 ```
 
 ## Components
 
-| Component | Purpose |
-|-----------|---------|
-| `src/viewer-request.js` | CF Function — geo-routes requests based on country → region → origin |
-| `src/test-client.html` | Interactive demo page with toggles and request simulation |
-| `lambdas/health-checker.py` | Background Lambda — checks each origin's health, updates KVS |
+| Component | Description |
+|-----------|-------------|
+| **CF Function** | Geo-routes requests by country → region → origin, checks KVS for enabled/disabled |
+| **Origin Lambdas (×3)** | Simulated origins with `/health` endpoint (SSM-controlled) |
+| **Synthetics Canaries (×3)** | Health checks every 60s per origin |
+| **CloudWatch Alarms (×3)** | Fires when canary SuccessPercent drops to 0% |
+| **Failover Lambda** | Triggered by alarm → disables origin in KVS; re-enables on recovery |
+| **Maintenance API** | Manual toggle endpoint for demos |
+| **KVS** | Source of truth for origin enabled/disabled state |
 
-## AWS Resources
+## Installation
 
-| Resource | Identifier |
-|----------|-----------|
-| CF Distribution | `E2ASS4LVS2WQ05` — `d2y11z8qnhnm6.cloudfront.net` |
-| KVS | `arn:aws:cloudfront::033216807884:key-value-store/1bd98db4-05f4-4aa1-9d6b-324f6e513832` |
-| CF Function | `us-east-1SimpleDynamicOriunctionViewerReq35F07A0A` |
-| Health Checker | `geo-routing-health-checker` (EventBridge every 60s) |
-| Maintenance API | `https://8llszk7jic.execute-api.us-east-1.amazonaws.com/maintenance` |
-| Origin 0 Lambda | `SimpleDynamicOriginRoutin-Origin0NodejsFunction529-VgxgmqPIBfMo` |
-| Origin 1 Lambda | `SimpleDynamicOriginRoutin-Origin1NodejsFunction975-Pq0yox0O7JkZ` |
-| Origin 2 Lambda | `SimpleDynamicOriginRoutin-Origin2NodejsFunction052-HvPwKCnKHQsk` |
-| ALB 0 | `Simple-Origi-qQX3a9ALUo1P-1885041626.us-east-1.elb.amazonaws.com` |
-| ALB 1 | `Simple-Origi-9M4sckIkxijJ-1516111109.us-east-1.elb.amazonaws.com` |
-| ALB 2 | `Simple-Origi-O914SMpD40HE-731436583.us-east-1.elb.amazonaws.com` |
-| S3 Demo Bucket | `simpledynamicoriginroutings-demodemobucketb018ff5f-4qxqz6jtf4n7` |
-| CDK Stack | `SimpleDynamicOriginRoutingStack` |
+### Prerequisites
+
+- AWS CLI v2
+- An AWS account with permissions for Lambda, CloudFront, CloudWatch, IAM, SSM, SNS, S3
+- A Lambda layer with `botocore[crt]` (required for CloudFront KVS API)
+
+### Step 1: Build the CRT Layer
+
+The Failover Lambda needs `botocore[crt]` to write to CloudFront Key Value Store. Build it:
+
+```bash
+mkdir -p /tmp/crt-layer/python
+cd /tmp/crt-layer/python
+pip install boto3 botocore awscrt -t . --upgrade
+cd /tmp/crt-layer
+zip -r botocore-crt-layer.zip python/
+```
+
+Publish as a Lambda layer:
+
+```bash
+aws lambda publish-layer-version \
+  --layer-name botocore-crt-arm64 \
+  --zip-file fileb:///tmp/crt-layer/botocore-crt-layer.zip \
+  --compatible-runtimes python3.9 \
+  --compatible-architectures arm64
+```
+
+Note the `LayerVersionArn` from the output.
+
+### Step 2: Deploy the CloudFormation Stack
+
+```bash
+aws cloudformation create-stack \
+  --stack-name geo-routing-demo \
+  --template-body file://cloudformation/geo-routing-stack.yaml \
+  --parameters \
+    ParameterKey=ProjectName,ParameterValue=geo-routing-demo \
+    ParameterKey=AlertEmail,ParameterValue=your@email.com \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region us-east-1
+```
+
+Wait for completion:
+
+```bash
+aws cloudformation wait stack-create-complete --stack-name geo-routing-demo
+```
+
+### Step 3: Attach the CRT Layer to Failover Lambda
+
+```bash
+aws lambda update-function-configuration \
+  --function-name geo-routing-demo-failover \
+  --layers <LayerVersionArn-from-step-1> \
+  --runtime python3.9
+```
+
+### Step 4: Initialize KVS with Origin URLs
+
+Get the origin Function URLs from stack outputs:
+
+```bash
+aws cloudformation describe-stacks --stack-name geo-routing-demo \
+  --query 'Stacks[0].Outputs' --output table
+```
+
+Then populate the KVS (use the KVS ARN from outputs):
+
+```bash
+KVS_ARN="<KvsArn from outputs>"
+ETAG=$(aws cloudfront-keyvaluestore describe-key-value-store --kvs-arn $KVS_ARN --query ETag --output text)
+
+# Set origin URLs
+aws cloudfront-keyvaluestore put-key --kvs-arn $KVS_ARN --key "0" --value "<Origin0Url>" --if-match $ETAG
+ETAG=$(aws cloudfront-keyvaluestore describe-key-value-store --kvs-arn $KVS_ARN --query ETag --output text)
+aws cloudfront-keyvaluestore put-key --kvs-arn $KVS_ARN --key "1" --value "<Origin1Url>" --if-match $ETAG
+ETAG=$(aws cloudfront-keyvaluestore describe-key-value-store --kvs-arn $KVS_ARN --query ETag --output text)
+aws cloudfront-keyvaluestore put-key --kvs-arn $KVS_ARN --key "2" --value "<Origin2Url>" --if-match $ETAG
+ETAG=$(aws cloudfront-keyvaluestore describe-key-value-store --kvs-arn $KVS_ARN --query ETag --output text)
+aws cloudfront-keyvaluestore put-key --kvs-arn $KVS_ARN --key "__default__" --value "<Origin0Url>" --if-match $ETAG
+
+# Set all origins as enabled
+ETAG=$(aws cloudfront-keyvaluestore describe-key-value-store --kvs-arn $KVS_ARN --query ETag --output text)
+aws cloudfront-keyvaluestore put-key --kvs-arn $KVS_ARN --key "origin_0_enabled" --value "true" --if-match $ETAG
+ETAG=$(aws cloudfront-keyvaluestore describe-key-value-store --kvs-arn $KVS_ARN --query ETag --output text)
+aws cloudfront-keyvaluestore put-key --kvs-arn $KVS_ARN --key "origin_1_enabled" --value "true" --if-match $ETAG
+ETAG=$(aws cloudfront-keyvaluestore describe-key-value-store --kvs-arn $KVS_ARN --query ETag --output text)
+aws cloudfront-keyvaluestore put-key --kvs-arn $KVS_ARN --key "origin_2_enabled" --value "true" --if-match $ETAG
+```
+
+### Step 5: Create CloudFront Distribution
+
+Create a CloudFront distribution with:
+- The KVS associated to a CloudFront Function (use `src/viewer-request.js`)
+- Origins pointing to your actual backend services
+- The Function triggered on viewer-request
+
+## Testing the Failover
+
+### Simulate an Origin Failure
+
+```bash
+# Make origin 1 unhealthy
+aws ssm put-parameter --name "/geo-routing/origin-1-healthy" --value "false" --type String --overwrite
+
+# Within 60s, the canary will detect the failure:
+# - Canary runs → gets HTTP 503 from /health
+# - CloudWatch alarm fires (SuccessPercent = 0%)
+# - SNS triggers Failover Lambda
+# - Failover Lambda sets KVS origin_1_enabled = false
+# - CloudFront Function routes EMEA traffic to default origin
+```
+
+### Verify Failover
+
+```bash
+# Check alarm state
+aws cloudwatch describe-alarms --alarm-names geo-routing-demo-canary-alarm-origin-1 \
+  --query 'MetricAlarms[0].StateValue'
+
+# Check KVS
+aws cloudfront-keyvaluestore list-keys --kvs-arn <KVS_ARN> \
+  --query 'Items[?Key==`origin_1_enabled`]'
+```
+
+### Recovery
+
+```bash
+# Re-enable origin 1
+aws ssm put-parameter --name "/geo-routing/origin-1-healthy" --value "true" --type String --overwrite
+
+# Within 60s:
+# - Canary passes → alarm goes to OK
+# - Failover Lambda re-enables origin in KVS
+# - Traffic routes normally again
+```
+
+## Manual Toggle (Maintenance API)
+
+```bash
+# Disable origin 2
+curl -X POST https://<MaintenanceApiUrl>/maintenance \
+  -H "Content-Type: application/json" \
+  -d '{"originId": 2, "enabled": false}'
+```
+
+## Cleanup
+
+```bash
+aws cloudformation delete-stack --stack-name geo-routing-demo
+```
 
 ## Geo-Routing Rules
 
 | Region | Countries | Origin |
 |--------|-----------|--------|
-| Americas | US, CA, MX, BR, AR, etc. | Origin 0 |
-| EMEA | GB, DE, FR, IL, AE, ZA, etc. | Origin 1 |
-| APAC | JP, AU, IN, SG, KR, etc. | Origin 2 |
-| Unmapped/Unknown | AQ, XX, etc. | Default (Origin 0) |
-
-## Routing Toggle Flow
-
-1. Test page toggle → API writes directly to KVS `origin_X_enabled`
-2. CF Function reads KVS → routes to fallback if disabled
-3. Health Checker Lambda (background, every 60s) detects actual origin failures
-4. If origin unhealthy → updates KVS → CF routes to fallback
-
-
-## Authentication
-
-Maintenance API requires: `Authorization: Bearer <token>`
-Token stored in: AWS Secrets Manager `geo-routing/maintenance-api-key`
-
-## Quick Commands
-
-```bash
-# Disable origin 1
-curl -X POST https://8llszk7jic.execute-api.us-east-1.amazonaws.com/maintenance \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(aws secretsmanager get-secret-value --secret-id geo-routing/maintenance-api-key --query SecretString --output text)" \
-  -d '{"originId":1,"enabled":false}'
-
-# Manually trigger health check
-aws lambda invoke --function-name geo-routing-health-checker --payload '{}' /tmp/hc.json && cat /tmp/hc.json
-
-# Check KVS state
-aws cloudfront-keyvaluestore list-keys --kvs-arn "arn:aws:cloudfront::033216807884:key-value-store/1bd98db4-05f4-4aa1-9d6b-324f6e513832"
-```
-
-## Source
-
-Based on: https://github.com/aws-samples/sample-simple-dynamic-origin-routing-using-amazon-cloudfront-functions
+| Americas | US, CA, MX, BR, AR, CL, CO, etc. | Origin 0 |
+| EMEA | GB, DE, FR, IL, AE, ZA, NG, etc. | Origin 1 |
+| APAC | JP, AU, IN, SG, KR, CN, etc. | Origin 2 |
+| Unmapped | AQ, XX, etc. | Default (Origin 0) |
