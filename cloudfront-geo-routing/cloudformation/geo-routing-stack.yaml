@@ -208,99 +208,118 @@ Resources:
       Value: 'true'
 
   # ═══════════════════════════════════════════════════════════════════════════════
-  # Router Lambda — single CloudFront origin, invokes correct target internally
+  # Origin API Gateways (×3) — one per origin, used as CloudFront origins
   # ═══════════════════════════════════════════════════════════════════════════════
-  RouterLambdaRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub '${ProjectName}-router-role'
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: router-policy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
-                Resource: '*'
-              - Effect: Allow
-                Action: lambda:InvokeFunction
-                Resource:
-                  - !GetAtt Origin0Function.Arn
-                  - !GetAtt Origin1Function.Arn
-                  - !GetAtt Origin2Function.Arn
-
-  RouterFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: !Sub '${ProjectName}-router'
-      Runtime: nodejs20.x
-      Architectures: [arm64]
-      Handler: index.handler
-      Role: !GetAtt RouterLambdaRole.Arn
-      Timeout: 15
-      MemorySize: 128
-      Environment:
-        Variables:
-          ORIGIN_0: !Ref Origin0Function
-          ORIGIN_1: !Ref Origin1Function
-          ORIGIN_2: !Ref Origin2Function
-      Code:
-        ZipFile: |
-          const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');
-          const lambda = new LambdaClient({});
-          const origins = { '0': process.env.ORIGIN_0, '1': process.env.ORIGIN_1, '2': process.env.ORIGIN_2 };
-          exports.handler = async (event) => {
-            const targetOrigin = (event.headers || {})['x-routed-origin'] || '0';
-            const fn = origins[targetOrigin] || origins['0'];
-            const res = await lambda.send(new InvokeCommand({ FunctionName: fn, Payload: JSON.stringify(event) }));
-            return JSON.parse(new TextDecoder().decode(res.Payload));
-          };
-
-  RouterApi:
+  OriginApi0:
     Type: AWS::ApiGatewayV2::Api
     Properties:
-      Name: !Sub '${ProjectName}-router-api'
+      Name: !Sub '${ProjectName}-origin-api-0'
       ProtocolType: HTTP
 
-  RouterApiStage:
+  OriginApi0Stage:
     Type: AWS::ApiGatewayV2::Stage
     Properties:
-      ApiId: !Ref RouterApi
+      ApiId: !Ref OriginApi0
       StageName: '$default'
       AutoDeploy: true
 
-  RouterApiIntegration:
+  OriginApi0Integration:
     Type: AWS::ApiGatewayV2::Integration
     Properties:
-      ApiId: !Ref RouterApi
+      ApiId: !Ref OriginApi0
       IntegrationType: AWS_PROXY
-      IntegrationUri: !GetAtt RouterFunction.Arn
+      IntegrationUri: !GetAtt Origin0Function.Arn
       PayloadFormatVersion: '2.0'
 
-  RouterApiRoute:
+  OriginApi0Route:
     Type: AWS::ApiGatewayV2::Route
     Properties:
-      ApiId: !Ref RouterApi
+      ApiId: !Ref OriginApi0
       RouteKey: '$default'
-      Target: !Sub 'integrations/${RouterApiIntegration}'
+      Target: !Sub 'integrations/${OriginApi0Integration}'
 
-  RouterApiPermission:
+  OriginApi0Permission:
     Type: AWS::Lambda::Permission
     Properties:
-      FunctionName: !Ref RouterFunction
+      FunctionName: !Ref Origin0Function
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
-      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${RouterApi}/*'
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${OriginApi0}/*'
+
+  OriginApi1:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${ProjectName}-origin-api-1'
+      ProtocolType: HTTP
+
+  OriginApi1Stage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref OriginApi1
+      StageName: '$default'
+      AutoDeploy: true
+
+  OriginApi1Integration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref OriginApi1
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt Origin1Function.Arn
+      PayloadFormatVersion: '2.0'
+
+  OriginApi1Route:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref OriginApi1
+      RouteKey: '$default'
+      Target: !Sub 'integrations/${OriginApi1Integration}'
+
+  OriginApi1Permission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Origin1Function
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${OriginApi1}/*'
+
+  OriginApi2:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${ProjectName}-origin-api-2'
+      ProtocolType: HTTP
+
+  OriginApi2Stage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref OriginApi2
+      StageName: '$default'
+      AutoDeploy: true
+
+  OriginApi2Integration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref OriginApi2
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt Origin2Function.Arn
+      PayloadFormatVersion: '2.0'
+
+  OriginApi2Route:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref OriginApi2
+      RouteKey: '$default'
+      Target: !Sub 'integrations/${OriginApi2Integration}'
+
+  OriginApi2Permission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Origin2Function
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${OriginApi2}/*'
 
   # ═══════════════════════════════════════════════════════════════════════════════
-  # CloudFront Function + Distribution (origin = API Gateway, no public Lambda URLs)
+  # CloudFront Function + Distribution
   # ═══════════════════════════════════════════════════════════════════════════════
 
   GeoRoutingFunction:
@@ -329,11 +348,14 @@ Resources:
           if (originId) { const e = await getKvs('origin_' + originId + '_enabled'); if (e === 'false') { fallback = 'origin_' + originId + '_maintenance'; originId = null; } }
           else { fallback = 'unmapped_' + (cc || 'UNKNOWN'); }
           if (!originId) { originId = '0'; if (fallback) console.log(JSON.stringify({ event: 'geo_routing_fallback', reason: fallback, country: cc })); }
+          const domain = await getKvs('origin_' + originId + '_domain');
+          if (domain) { cf.updateRequestOrigin({ domainName: domain, originId: 'origin-' + originId }); }
           request.headers['x-routed-origin'] = { value: originId };
           request.headers['x-routed-region'] = { value: originId };
           request.headers['x-viewer-country-resolved'] = { value: cc || 'UNKNOWN' };
           return request;
         }
+
 
   GeoRoutingDistribution:
     Type: AWS::CloudFront::Distribution
@@ -349,13 +371,23 @@ Resources:
           CachedMethods: [GET, HEAD]
           CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
           OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
-          TargetOriginId: router-origin
+          TargetOriginId: origin-0
           FunctionAssociations:
             - EventType: viewer-request
               FunctionARN: !GetAtt GeoRoutingFunction.FunctionARN
         Origins:
-          - Id: router-origin
-            DomainName: !Sub '${RouterApi}.execute-api.${AWS::Region}.amazonaws.com'
+          - Id: origin-0
+            DomainName: !Sub '${OriginApi0}.execute-api.${AWS::Region}.amazonaws.com'
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              HTTPSPort: 443
+          - Id: origin-1
+            DomainName: !Sub '${OriginApi1}.execute-api.${AWS::Region}.amazonaws.com'
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              HTTPSPort: 443
+          - Id: origin-2
+            DomainName: !Sub '${OriginApi2}.execute-api.${AWS::Region}.amazonaws.com'
             CustomOriginConfig:
               OriginProtocolPolicy: https-only
               HTTPSPort: 443
