@@ -10,7 +10,21 @@ Following our discussion, here's the full technical breakdown of the CloudFront 
 
 ## Architecture Overview
 
+![Architecture Diagram](./architecture.drawio)
+
+*(Open the attached .drawio file in draw.io or diagrams.net for full interactive view)*
+
 The solution routes viewer requests to the nearest regional origin based on the viewer's country, with automated failover when an origin becomes unhealthy.
+
+**Request flow:**
+```
+Viewer → CloudFront → CF Function (reads KVS) → updateRequestOrigin() → Correct Regional Origin
+```
+
+**Failover flow:**
+```
+Canary → /health check fails (×3) → CloudWatch Alarm → SNS → Failover Lambda → KVS (enabled=false) → CF Function skips origin
+```
 
 **Components:**
 - **CloudFront Distribution** — 3 origins (Americas, EMEA, APAC)
