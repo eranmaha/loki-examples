@@ -342,8 +342,6 @@ Resources:
       Code:
         ZipFile: |
           exports.handler = async (event) => {
-            const method = event.requestContext?.http?.method || event.httpMethod || 'GET';
-            if (method === 'OPTIONS') { return { statusCode: 200, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'x-viewer-country,content-type', 'Access-Control-Allow-Methods': 'GET,OPTIONS' }, body: '' }; }
             const cfDomain = process.env.CF_DOMAIN;
             const html = `<!DOCTYPE html>
           <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
@@ -361,7 +359,7 @@ Resources:
           button:hover{background:#2ea043}
           button.danger{background:#da3633}
           button.secondary{background:#30363d;color:#c9d1d9}
-          select,input{background:#0d1117;color:#c9d1d9;border:1px solid #30363d;padding:8px;border-radius:6px;font-size:13px}
+          select{background:#0d1117;color:#c9d1d9;border:1px solid #30363d;padding:8px;border-radius:6px;font-size:13px}
           #log{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:12px;font-family:monospace;font-size:12px;max-height:400px;overflow-y:auto;white-space:pre-wrap}
           .stat{display:inline-block;background:#30363d;padding:4px 10px;border-radius:4px;margin:4px;font-size:12px}
           .origin-0{border-left:3px solid #3fb950}.origin-1{border-left:3px solid #58a6ff}.origin-2{border-left:3px solid #d29922}
@@ -379,6 +377,7 @@ Resources:
           <option value="GB">GB - EMEA</option>
           <option value="AU">AU - APAC</option>
           <option value="BR">BR - Americas</option>
+          <option value="RANDOM">Random (mixed regions)</option>
           </select></div><br>
           <button onclick="send(1)">Send 1</button>
           <button onclick="send(10)">Burst 10</button>
@@ -392,33 +391,41 @@ Resources:
           <div class="card"><h3>Request Log</h3><div id="log"></div></div>
           </div>
           <script>
-          const base = 'https://${cfDomain}';
-          let counts = {0:0,1:0,2:0,err:0};
+          var base = 'https://${cfDomain}';
+          var counts = {0:0,1:0,2:0,err:0};
+          var randomCountries = [
+            {cc:'US',region:'Americas'},{cc:'CA',region:'Americas'},{cc:'BR',region:'Americas'},{cc:'MX',region:'Americas'},
+            {cc:'GB',region:'EMEA'},{cc:'DE',region:'EMEA'},{cc:'FR',region:'EMEA'},{cc:'IL',region:'EMEA'},{cc:'ZA',region:'EMEA'},{cc:'AE',region:'EMEA'},
+            {cc:'JP',region:'APAC'},{cc:'AU',region:'APAC'},{cc:'IN',region:'APAC'},{cc:'SG',region:'APAC'},{cc:'KR',region:'APAC'}
+          ];
+          function pickRandom(){return randomCountries[Math.floor(Math.random()*randomCountries.length)];}
           function updateStats(){
             document.getElementById('stats').innerHTML =
-              '<span class="stat origin-0">Origin 0: '+counts[0]+'</span>'+
-              '<span class="stat origin-1">Origin 1: '+counts[1]+'</span>'+
-              '<span class="stat origin-2">Origin 2: '+counts[2]+'</span>'+
+              '<span class="stat origin-0">Origin 0 (Americas): '+counts[0]+'</span>'+
+              '<span class="stat origin-1">Origin 1 (EMEA): '+counts[1]+'</span>'+
+              '<span class="stat origin-2">Origin 2 (APAC): '+counts[2]+'</span>'+
               '<span class="stat">Errors: '+counts.err+'</span>';
           }
           function log(msg){var el=document.getElementById('log');el.textContent+=msg+String.fromCharCode(10);el.scrollTop=el.scrollHeight;}
           async function send(n){
-            const cc = document.getElementById('country').value;
-            const headers = cc ? {'x-viewer-country': cc} : {};
-            for(let i=0;i<n;i++){
+            var sel = document.getElementById('country').value;
+            for(var i=0;i<n;i++){
               try{
-                const r = await fetch(base+'/?t='+Date.now()+Math.random(), {headers});
-                const d = await r.json();
+                var cc = sel === 'RANDOM' ? pickRandom().cc : sel;
+                var headers = cc ? {'x-viewer-country': cc} : {};
+                var r = await fetch(base+'/?t='+Date.now()+Math.random(), {headers: headers});
+                var d = await r.json();
                 counts[d.originId]++;
-                log((cc||'auto')+' → Origin '+d.originId+' ('+d.ts+')');
-              }catch(e){counts.err++;log('ERROR: '+e.message)}
+                log((cc||'auto')+' -> Origin '+d.originId+' ('+d.country+')');
+              }catch(e){counts.err++;log('ERROR: '+e.message);}
             }
             updateStats();
           }
-          function clearLog(){document.getElementById('log').textContent='';counts={0:0,1:0,2:0,err:0};updateStats()}
+          function clearLog(){document.getElementById('log').textContent='';counts={0:0,1:0,2:0,err:0};updateStats();}
           </script></body></html>`;
             return { statusCode: 200, headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' }, body: html };
           };
+
 
   TestPageIntegration:
     Type: AWS::ApiGatewayV2::Integration
