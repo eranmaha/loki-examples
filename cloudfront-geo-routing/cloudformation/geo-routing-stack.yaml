@@ -852,7 +852,7 @@ Resources:
       Statistic: Average
       Period: !Ref CanaryEvaluationPeriod
       EvaluationPeriods: 3
-        DatapointsToAlarm: 3
+      DatapointsToAlarm: 3
       Threshold: 0
       ComparisonOperator: LessThanOrEqualToThreshold
       TreatMissingData: notBreaching
@@ -872,7 +872,7 @@ Resources:
       Statistic: Average
       Period: !Ref CanaryEvaluationPeriod
       EvaluationPeriods: 3
-        DatapointsToAlarm: 3
+      DatapointsToAlarm: 3
       Threshold: 0
       ComparisonOperator: LessThanOrEqualToThreshold
       TreatMissingData: notBreaching
@@ -892,7 +892,7 @@ Resources:
       Statistic: Average
       Period: !Ref CanaryEvaluationPeriod
       EvaluationPeriods: 3
-        DatapointsToAlarm: 3
+      DatapointsToAlarm: 3
       Threshold: 0
       ComparisonOperator: LessThanOrEqualToThreshold
       TreatMissingData: notBreaching
