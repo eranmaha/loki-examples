@@ -42,7 +42,8 @@ Every request passes through a CloudFront Function at the edge. The function:
 2. Maps the country to a region (Americas → Origin 0, EMEA → Origin 1, APAC → Origin 2)
 3. Checks KVS if that origin is enabled
 4. If enabled → uses `cf.updateRequestOrigin()` to route to the correct origin
-5. If disabled → falls back to Origin 0 (Americas) as the default
+5. If disabled → scans all origins (0, 1, 2) and picks the first healthy one
+6. If ALL origins are down → last resort: routes to Origin 0 (better than no response)
 
 ```javascript
 import cf from 'cloudfront';
@@ -60,13 +61,23 @@ async function handler(event) {
   let originId = getOriginForCountry(cc); // returns '0', '1', or '2'
   
   // Check if origin is enabled in KVS
-  const enabled = await kvsHandle.get('origin_' + originId + '_enabled');
-  if (enabled === 'false') {
-    originId = '0'; // fallback to default
+  var enabled = await kvsHandle.get('origin_' + originId + '_enabled');
+  if (enabled === 'false') { originId = null; }
+  
+  // Fallback: find any healthy origin (priority: 0, 1, 2)
+  if (!originId) {
+    var candidates = ['0', '1', '2'];
+    for (var i = 0; i < candidates.length; i++) {
+      var e = await kvsHandle.get('origin_' + candidates[i] + '_enabled');
+      if (e !== 'false') { originId = candidates[i]; break; }
+    }
   }
   
-  // Route to correct origin
-  const domain = await kvsHandle.get('origin_' + originId + '_domain');
+  // Last resort: use origin 0 even if unhealthy
+  if (!originId) { originId = '0'; }
+  
+  // Route to selected origin
+  var domain = await kvsHandle.get('origin_' + originId + '_domain');
   cf.updateRequestOrigin({ domainName: domain, originId: 'origin-' + originId });
   
   return request;
@@ -196,7 +207,7 @@ T+0:00  Origin 1 becomes unhealthy
 T+1:00  Canary check #1 fails
 T+2:00  Canary check #2 fails
 T+3:00  Canary check #3 fails → Alarm triggers → Lambda disables Origin 1 in KVS
-T+3:01  All EMEA traffic routes to Origin 0 (fallback) ← failover complete
+T+3:01  All EMEA traffic routes to next healthy origin (e.g., Origin 2 if Origin 0 is also down) ← failover complete
 
 T+5:00  Origin 1 recovers
 T+6:00  Canary check #1 passes
