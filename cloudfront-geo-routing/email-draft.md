@@ -237,7 +237,7 @@ The entire solution is deployed via a single CloudFormation stack:
 
 ## Live Demo
 
-Test page (interactive): https://d2zpel5l84ohew.cloudfront.net/test
+Test page (interactive): https://<your-distribution-domain>.cloudfront.net/test
 
 You can simulate a failure by setting an origin to unhealthy and watching the failover in real time.
 
