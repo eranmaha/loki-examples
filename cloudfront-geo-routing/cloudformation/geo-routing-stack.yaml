@@ -109,6 +109,8 @@ Resources:
           const ssm = new SSMClient({});
           const originId = process.env.ORIGIN_ID;
           exports.handler = async (event) => {
+            const method = event.requestContext?.http?.method || event.httpMethod || 'GET';
+            if (method === 'OPTIONS') { return { statusCode: 200, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'x-viewer-country,content-type', 'Access-Control-Allow-Methods': 'GET,OPTIONS' }, body: '' }; }
             const path = event.rawPath || '/';
             const headers = event.headers || {};
             if (path === '/health') {
@@ -141,6 +143,8 @@ Resources:
           const ssm = new SSMClient({});
           const originId = process.env.ORIGIN_ID;
           exports.handler = async (event) => {
+            const method = event.requestContext?.http?.method || event.httpMethod || 'GET';
+            if (method === 'OPTIONS') { return { statusCode: 200, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'x-viewer-country,content-type', 'Access-Control-Allow-Methods': 'GET,OPTIONS' }, body: '' }; }
             const path = event.rawPath || '/';
             const headers = event.headers || {};
             if (path === '/health') {
@@ -173,6 +177,8 @@ Resources:
           const ssm = new SSMClient({});
           const originId = process.env.ORIGIN_ID;
           exports.handler = async (event) => {
+            const method = event.requestContext?.http?.method || event.httpMethod || 'GET';
+            if (method === 'OPTIONS') { return { statusCode: 200, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'x-viewer-country,content-type', 'Access-Control-Allow-Methods': 'GET,OPTIONS' }, body: '' }; }
             const path = event.rawPath || '/';
             const headers = event.headers || {};
             if (path === '/health') {
@@ -336,6 +342,8 @@ Resources:
       Code:
         ZipFile: |
           exports.handler = async (event) => {
+            const method = event.requestContext?.http?.method || event.httpMethod || 'GET';
+            if (method === 'OPTIONS') { return { statusCode: 200, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'x-viewer-country,content-type', 'Access-Control-Allow-Methods': 'GET,OPTIONS' }, body: '' }; }
             const cfDomain = process.env.CF_DOMAIN;
             const html = `<!DOCTYPE html>
           <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
