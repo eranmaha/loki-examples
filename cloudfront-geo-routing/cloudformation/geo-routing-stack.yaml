@@ -353,6 +353,7 @@ Resources:
           h1{color:#58a6ff;margin-bottom:8px}
           .sub{color:#8b949e;margin-bottom:20px}
           .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+          @media(max-width:768px){.grid{grid-template-columns:1fr}}
           .card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px}
           .card h3{color:#58a6ff;font-size:13px;text-transform:uppercase;margin-bottom:10px}
           button{background:#238636;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:13px;margin:4px}
@@ -360,13 +361,29 @@ Resources:
           button.danger{background:#da3633}
           button.secondary{background:#30363d;color:#c9d1d9}
           select{background:#0d1117;color:#c9d1d9;border:1px solid #30363d;padding:8px;border-radius:6px;font-size:13px}
-          #log{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:12px;font-family:monospace;font-size:12px;max-height:400px;overflow-y:auto;white-space:pre-wrap}
+          #log{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:12px;font-family:monospace;font-size:12px;max-height:300px;overflow-y:auto;white-space:pre-wrap}
           .stat{display:inline-block;background:#30363d;padding:4px 10px;border-radius:4px;margin:4px;font-size:12px}
           .origin-0{border-left:3px solid #3fb950}.origin-1{border-left:3px solid #58a6ff}.origin-2{border-left:3px solid #d29922}
+          .origin-status{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+          .origin-badge{padding:8px 14px;border-radius:6px;font-size:13px;font-weight:500;display:flex;align-items:center;gap:6px}
+          .origin-badge .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+          .badge-ok{background:#0d2818;border:1px solid #3fb950}.badge-ok .dot{background:#3fb950}
+          .badge-fail{background:#2d1214;border:1px solid #da3633}.badge-fail .dot{background:#da3633;animation:pulse 1s infinite}
+          .badge-unknown{background:#1c1c1c;border:1px solid #484f58}.badge-unknown .dot{background:#484f58}
+          @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+          .failover-alert{background:#2d1214;border:1px solid #da3633;border-radius:8px;padding:12px;margin-bottom:16px;display:none;font-size:13px;color:#f85149}
+          .failover-alert.show{display:block}
           </style></head><body>
           <div class="container">
           <h1>CloudFront Geo-Routing Demo</h1>
           <p class="sub">Dynamic origin selection with automated failover</p>
+          <div id="failover-alert" class="failover-alert"></div>
+          <div class="card" style="margin-bottom:16px"><h3>Origin Status</h3>
+          <div id="origin-status" class="origin-status">
+          <div class="origin-badge badge-unknown"><span class="dot"></span>Origin 0 (Americas): checking...</div>
+          <div class="origin-badge badge-unknown"><span class="dot"></span>Origin 1 (EMEA): checking...</div>
+          <div class="origin-badge badge-unknown"><span class="dot"></span>Origin 2 (APAC): checking...</div>
+          </div></div>
           <div class="grid">
           <div class="card"><h3>Send Requests</h3>
           <div>Country: <select id="country">
@@ -393,11 +410,16 @@ Resources:
           <script>
           var base = 'https://${cfDomain}';
           var counts = {0:0,1:0,2:0,err:0};
+          var expectedOrigin = {'US':'0','CA':'0','BR':'0','MX':'0','GB':'1','DE':'1','FR':'1','IL':'1','ZA':'1','AE':'1','JP':'2','AU':'2','IN':'2','SG':'2','KR':'2'};
+          var failovers = [];
           var randomCountries = [
             {cc:'US',region:'Americas'},{cc:'CA',region:'Americas'},{cc:'BR',region:'Americas'},{cc:'MX',region:'Americas'},
             {cc:'GB',region:'EMEA'},{cc:'DE',region:'EMEA'},{cc:'FR',region:'EMEA'},{cc:'IL',region:'EMEA'},{cc:'ZA',region:'EMEA'},{cc:'AE',region:'EMEA'},
             {cc:'JP',region:'APAC'},{cc:'AU',region:'APAC'},{cc:'IN',region:'APAC'},{cc:'SG',region:'APAC'},{cc:'KR',region:'APAC'}
           ];
+          var originNames = ['Americas','EMEA','APAC'];
+          var originHealth = [null,null,null];
+
           function pickRandom(){return randomCountries[Math.floor(Math.random()*randomCountries.length)];}
           function updateStats(){
             document.getElementById('stats').innerHTML =
@@ -407,21 +429,61 @@ Resources:
               '<span class="stat">Errors: '+counts.err+'</span>';
           }
           function log(msg){var el=document.getElementById('log');el.textContent+=msg+String.fromCharCode(10);el.scrollTop=el.scrollHeight;}
+          function updateOriginStatus(){
+            var html='';
+            for(var i=0;i<3;i++){
+              var cls=originHealth[i]===null?'badge-unknown':originHealth[i]?'badge-ok':'badge-fail';
+              var txt=originHealth[i]===null?'checking...':originHealth[i]?'healthy':'FAILOVER ACTIVE';
+              html+='<div class="origin-badge '+cls+'"><span class="dot"></span>Origin '+i+' ('+originNames[i]+'): '+txt+'</div>';
+            }
+            document.getElementById('origin-status').innerHTML=html;
+          }
+          function showFailoverAlert(cc, expected, actual){
+            var el=document.getElementById('failover-alert');
+            el.className='failover-alert show';
+            el.innerHTML='\\u26a0\\ufe0f <strong>Failover detected!</strong> '+cc+' expected Origin '+expected+' ('+originNames[expected]+') but routed to Origin '+actual+' ('+originNames[actual]+') — Origin '+expected+' is down, traffic rerouted.';
+            originHealth[parseInt(expected)]=false;
+            updateOriginStatus();
+          }
+          async function checkHealth(){
+            for(var i=0;i<3;i++){
+              try{
+                var r=await fetch(base+'/health?origin='+i+'&t='+Date.now());
+                originHealth[i]=(r.status===200);
+              }catch(e){originHealth[i]=false;}
+            }
+            updateOriginStatus();
+          }
           async function send(n){
-            var sel = document.getElementById('country').value;
+            var sel=document.getElementById('country').value;
             for(var i=0;i<n;i++){
               try{
-                var cc = sel === 'RANDOM' ? pickRandom().cc : sel;
-                var headers = cc ? {'x-viewer-country': cc} : {};
-                var r = await fetch(base+'/?t='+Date.now()+Math.random(), {headers: headers});
-                var d = await r.json();
+                var cc=sel==='RANDOM'?pickRandom().cc:sel;
+                var headers=cc?{'x-viewer-country':cc}:{};
+                var r=await fetch(base+'/?t='+Date.now()+Math.random(),{headers:headers});
+                var d=await r.json();
                 counts[d.originId]++;
-                log((cc||'auto')+' -> Origin '+d.originId+' ('+d.country+')');
+                var exp=expectedOrigin[cc];
+                if(exp && exp!==d.originId){
+                  showFailoverAlert(cc,exp,d.originId);
+                  log('\\u26a0\\ufe0f '+cc+' -> Origin '+d.originId+' [FAILOVER from Origin '+exp+']');
+                } else {
+                  log((cc||'auto')+' -> Origin '+d.originId+' ('+d.country+')');
+                  originHealth[parseInt(d.originId)]=true;
+                  updateOriginStatus();
+                }
               }catch(e){counts.err++;log('ERROR: '+e.message);}
             }
             updateStats();
           }
-          function clearLog(){document.getElementById('log').textContent='';counts={0:0,1:0,2:0,err:0};updateStats();}
+          function clearLog(){
+            document.getElementById('log').textContent='';
+            counts={0:0,1:0,2:0,err:0};updateStats();
+            document.getElementById('failover-alert').className='failover-alert';
+            originHealth=[null,null,null];updateOriginStatus();
+          }
+          checkHealth();
+          setInterval(checkHealth,30000);
           </script></body></html>`;
             return { statusCode: 200, headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' }, body: html };
           };
@@ -588,9 +650,24 @@ Resources:
 
           def handler(event, context):
               for record in event.get("Records", []):
-                  message = json.loads(record["Sns"]["Message"])
+                  raw_message = record["Sns"]["Message"]
+                  print(f"Raw SNS message: {raw_message}")
+
+                  # Try to parse as JSON (CloudWatch Alarm format)
+                  try:
+                      message = json.loads(raw_message)
+                  except (json.JSONDecodeError, TypeError):
+                      # Not JSON - might be subscription confirmation or plain text
+                      print(f"Non-JSON message, skipping: {raw_message[:200]}")
+                      return
+
                   alarm_name = message.get("AlarmName", "")
                   new_state = message.get("NewStateValue", "")
+
+                  if not alarm_name or not new_state:
+                      print(f"Missing AlarmName or NewStateValue in message: {json.dumps(message)[:200]}")
+                      return
+
                   origin_id = None
                   for i in ["0", "1", "2"]:
                       if f"origin-{i}" in alarm_name:
@@ -599,6 +676,7 @@ Resources:
                   if origin_id is None:
                       print(f"Cannot extract origin from: {alarm_name}")
                       return
+
                   enabled = (new_state == "OK")
                   try:
                       desc = kvs.describe_key_value_store(KvsARN=KVS_ARN)
@@ -610,6 +688,7 @@ Resources:
                   except Exception as e:
                       print(f"Error: {e}")
                       raise
+
 
   FailoverPermission:
     Type: AWS::Lambda::Permission
