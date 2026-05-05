@@ -26,20 +26,6 @@ Resources:
   # ═══════════════════════════════════════════════════════════════════════════════
   # S3 + SNS
   # ═══════════════════════════════════════════════════════════════════════════════
-  CanaryArtifactsBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Sub '${ProjectName}-canary-artifacts-${AWS::AccountId}'
-      LifecycleConfiguration:
-        Rules:
-          - Id: expire-artifacts
-            Status: Enabled
-            ExpirationInDays: 7
-      PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        BlockPublicPolicy: true
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
 
   AlertTopic:
     Type: AWS::SNS::Topic
@@ -53,6 +39,21 @@ Resources:
       TopicArn: !Ref AlertTopic
       Protocol: email
       Endpoint: !Ref AlertEmail
+
+  CanaryArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-canary-artifacts-${AWS::AccountId}'
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-immediately
+            Status: Enabled
+            ExpirationInDays: 1
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
 
   # ═══════════════════════════════════════════════════════════════════════════════
   # CloudFront Key Value Store
