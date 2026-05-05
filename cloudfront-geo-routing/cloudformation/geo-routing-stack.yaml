@@ -401,7 +401,7 @@ Resources:
               '<span class="stat origin-2">Origin 2: '+counts[2]+'</span>'+
               '<span class="stat">Errors: '+counts.err+'</span>';
           }
-          function log(msg){document.getElementById('log').textContent += msg+'\n';document.getElementById('log').scrollTop=99999}
+          function log(msg){var el=document.getElementById('log');el.textContent+=msg+String.fromCharCode(10);el.scrollTop=el.scrollHeight;}
           async function send(n){
             const cc = document.getElementById('country').value;
             const headers = cc ? {'x-viewer-country': cc} : {};
