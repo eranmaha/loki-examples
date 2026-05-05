@@ -319,6 +319,122 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${OriginApi2}/*'
 
+
+  TestPageFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-test-page'
+      Runtime: nodejs20.x
+      Architectures: [arm64]
+      Handler: index.handler
+      Role: !GetAtt OriginLambdaRole.Arn
+      Timeout: 5
+      MemorySize: 128
+      Environment:
+        Variables:
+          CF_DOMAIN: !GetAtt GeoRoutingDistribution.DomainName
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            const cfDomain = process.env.CF_DOMAIN;
+            const html = `<!DOCTYPE html>
+          <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+          <title>Geo-Routing Test</title>
+          <style>
+          *{margin:0;padding:0;box-sizing:border-box}
+          body{font-family:-apple-system,sans-serif;background:#0d1117;color:#c9d1d9;padding:20px;min-height:100vh}
+          .container{max-width:900px;margin:0 auto}
+          h1{color:#58a6ff;margin-bottom:8px}
+          .sub{color:#8b949e;margin-bottom:20px}
+          .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+          .card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px}
+          .card h3{color:#58a6ff;font-size:13px;text-transform:uppercase;margin-bottom:10px}
+          button{background:#238636;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:13px;margin:4px}
+          button:hover{background:#2ea043}
+          button.danger{background:#da3633}
+          button.secondary{background:#30363d;color:#c9d1d9}
+          select,input{background:#0d1117;color:#c9d1d9;border:1px solid #30363d;padding:8px;border-radius:6px;font-size:13px}
+          #log{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:12px;font-family:monospace;font-size:12px;max-height:400px;overflow-y:auto;white-space:pre-wrap}
+          .stat{display:inline-block;background:#30363d;padding:4px 10px;border-radius:4px;margin:4px;font-size:12px}
+          .origin-0{border-left:3px solid #3fb950}.origin-1{border-left:3px solid #58a6ff}.origin-2{border-left:3px solid #d29922}
+          </style></head><body>
+          <div class="container">
+          <h1>CloudFront Geo-Routing Demo</h1>
+          <p class="sub">Dynamic origin selection with automated failover</p>
+          <div class="grid">
+          <div class="card"><h3>Send Requests</h3>
+          <div>Country: <select id="country">
+          <option value="">Auto (real IP)</option>
+          <option value="US">US - Americas</option>
+          <option value="IL">IL - EMEA</option>
+          <option value="JP">JP - APAC</option>
+          <option value="GB">GB - EMEA</option>
+          <option value="AU">AU - APAC</option>
+          <option value="BR">BR - Americas</option>
+          </select></div><br>
+          <button onclick="send(1)">Send 1</button>
+          <button onclick="send(10)">Burst 10</button>
+          <button onclick="send(100)">Burst 100</button>
+          <button class="secondary" onclick="clearLog()">Clear</button>
+          </div>
+          <div class="card"><h3>Stats</h3>
+          <div id="stats">No requests yet</div>
+          </div>
+          </div>
+          <div class="card"><h3>Request Log</h3><div id="log"></div></div>
+          </div>
+          <script>
+          const base = 'https://${cfDomain}';
+          let counts = {0:0,1:0,2:0,err:0};
+          function updateStats(){
+            document.getElementById('stats').innerHTML =
+              '<span class="stat origin-0">Origin 0: '+counts[0]+'</span>'+
+              '<span class="stat origin-1">Origin 1: '+counts[1]+'</span>'+
+              '<span class="stat origin-2">Origin 2: '+counts[2]+'</span>'+
+              '<span class="stat">Errors: '+counts.err+'</span>';
+          }
+          function log(msg){document.getElementById('log').textContent += msg+'\n';document.getElementById('log').scrollTop=99999}
+          async function send(n){
+            const cc = document.getElementById('country').value;
+            const headers = cc ? {'x-viewer-country': cc} : {};
+            for(let i=0;i<n;i++){
+              try{
+                const r = await fetch(base+'/?t='+Date.now()+Math.random(), {headers});
+                const d = await r.json();
+                counts[d.originId]++;
+                log((cc||'auto')+' → Origin '+d.originId+' ('+d.ts+')');
+              }catch(e){counts.err++;log('ERROR: '+e.message)}
+            }
+            updateStats();
+          }
+          function clearLog(){document.getElementById('log').textContent='';counts={0:0,1:0,2:0,err:0};updateStats()}
+          </script></body></html>`;
+            return { statusCode: 200, headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' }, body: html };
+          };
+
+  TestPageIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref OriginApi0
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt TestPageFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  TestPageRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref OriginApi0
+      RouteKey: GET /test
+      Target: !Sub 'integrations/${TestPageIntegration}'
+
+  TestPagePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref TestPageFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${OriginApi0}/*'
+
   # ═══════════════════════════════════════════════════════════════════════════════
   # CloudFront Function + Distribution
   # ═══════════════════════════════════════════════════════════════════════════════
@@ -366,6 +482,14 @@ Resources:
         Comment: !Sub '${ProjectName} - Geo-routed with automated failover'
         PriceClass: PriceClass_100
         HttpVersion: http2and3
+        CacheBehaviors:
+          - PathPattern: /test
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            TargetOriginId: origin-0
         DefaultCacheBehavior:
           ViewerProtocolPolicy: redirect-to-https
           AllowedMethods: [GET, HEAD, OPTIONS]
@@ -806,3 +930,7 @@ Outputs:
   CanaryArtifactsBucketName:
     Description: Canary artifacts bucket
     Value: !Ref CanaryArtifactsBucket
+
+  TestPageUrl:
+    Description: Test page URL
+    Value: !Sub 'https://${GeoRoutingDistribution.DomainName}/test'
