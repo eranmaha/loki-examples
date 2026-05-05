@@ -851,7 +851,8 @@ Resources:
           Value: !Ref CanaryOrigin0
       Statistic: Average
       Period: !Ref CanaryEvaluationPeriod
-      EvaluationPeriods: 1
+      EvaluationPeriods: 3
+        DatapointsToAlarm: 3
       Threshold: 0
       ComparisonOperator: LessThanOrEqualToThreshold
       TreatMissingData: notBreaching
@@ -870,7 +871,8 @@ Resources:
           Value: !Ref CanaryOrigin1
       Statistic: Average
       Period: !Ref CanaryEvaluationPeriod
-      EvaluationPeriods: 1
+      EvaluationPeriods: 3
+        DatapointsToAlarm: 3
       Threshold: 0
       ComparisonOperator: LessThanOrEqualToThreshold
       TreatMissingData: notBreaching
@@ -889,7 +891,8 @@ Resources:
           Value: !Ref CanaryOrigin2
       Statistic: Average
       Period: !Ref CanaryEvaluationPeriod
-      EvaluationPeriods: 1
+      EvaluationPeriods: 3
+        DatapointsToAlarm: 3
       Threshold: 0
       ComparisonOperator: LessThanOrEqualToThreshold
       TreatMissingData: notBreaching
