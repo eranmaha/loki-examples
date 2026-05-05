@@ -16,29 +16,56 @@ echo "Region:   $REGION"
 echo "Template: $TEMPLATE"
 echo ""
 
-# ─── Step 1: Clean up any existing SSM params that would conflict ────────────
-echo "▶ Step 1: Cleaning up conflicting SSM parameters..."
+# ─── Step 1: Delete existing stack if present ────────────────────────────────
+echo "▶ Step 1: Checking for existing stack..."
+STACK_STATUS=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$REGION" \
+  --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "DOES_NOT_EXIST")
+
+if [ "$STACK_STATUS" != "DOES_NOT_EXIST" ]; then
+  echo "  Found existing stack (status: $STACK_STATUS). Cleaning up..."
+
+  # Stop canaries before deletion
+  echo "  Stopping canaries..."
+  for i in 0 1 2; do
+    aws synthetics stop-canary --name "${STACK_NAME}-origin-${i}" --region "$REGION" 2>/dev/null || true
+  done
+  sleep 10
+
+  # Empty the canary artifacts bucket
+  BUCKET="${STACK_NAME}-canary-artifacts-$(aws sts get-caller-identity --query Account --output text)"
+  echo "  Emptying bucket $BUCKET..."
+  aws s3 rm "s3://$BUCKET" --recursive --region "$REGION" 2>/dev/null || true
+
+  # Delete the stack
+  echo "  Deleting stack..."
+  aws cloudformation delete-stack --stack-name "$STACK_NAME" --region "$REGION"
+  aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME" --region "$REGION"
+  echo "  ✓ Old stack deleted"
+else
+  echo "  No existing stack found"
+fi
+
+# ─── Step 2: Clean up SSM params and deploy ──────────────────────────────────
+echo ""
+echo "▶ Step 2: Deploying CloudFormation stack..."
 for i in 0 1 2; do
   aws ssm delete-parameter --name "/geo-routing/origin-${i}-healthy" --region "$REGION" 2>/dev/null || true
 done
-echo "  ✓ Done"
 
-# ─── Step 2: Deploy CloudFormation stack ─────────────────────────────────────
-echo ""
-echo "▶ Step 2: Deploying CloudFormation stack..."
 PARAMS="ParameterKey=ProjectName,ParameterValue=$STACK_NAME"
 if [ -n "$ALERT_EMAIL" ]; then
   PARAMS="$PARAMS ParameterKey=AlertEmail,ParameterValue=$ALERT_EMAIL"
 fi
 
-aws cloudformation deploy \
+aws cloudformation create-stack \
   --stack-name "$STACK_NAME" \
-  --template-file "$TEMPLATE" \
-  --parameter-overrides $PARAMS \
+  --template-body "file://$TEMPLATE" \
+  --parameters $PARAMS \
   --capabilities CAPABILITY_NAMED_IAM \
-  --region "$REGION" \
-  --no-fail-on-empty-changeset
+  --region "$REGION"
 
+echo "  Waiting for stack creation (CloudFront takes ~5 min)..."
+aws cloudformation wait stack-create-complete --stack-name "$STACK_NAME" --region "$REGION"
 echo "  ✓ Stack deployed"
 
 # ─── Step 3: Get stack outputs ───────────────────────────────────────────────
