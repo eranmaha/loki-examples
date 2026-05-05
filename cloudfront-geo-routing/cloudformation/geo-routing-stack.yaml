@@ -1003,6 +1003,75 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${MaintenanceApi}/*'
 
+  GeoRoutingDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${ProjectName}-health'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0, "y": 0, "width": 8, "height": 6,
+              "properties": {
+                "title": "Origin 0 (Americas) - Health",
+                "metrics": [["CloudWatchSynthetics", "SuccessPercent", "CanaryName", "${ProjectName}-origin-0", {"stat": "Average", "color": "#3fb950"}]],
+                "period": 300, "region": "${AWS::Region}", "view": "timeSeries",
+                "yAxis": {"left": {"min": 0, "max": 100}},
+                "annotations": {"horizontal": [{"value": 90, "label": "Alarm threshold", "color": "#da3633"}]}
+              }
+            },
+            {
+              "type": "metric",
+              "x": 8, "y": 0, "width": 8, "height": 6,
+              "properties": {
+                "title": "Origin 1 (EMEA) - Health",
+                "metrics": [["CloudWatchSynthetics", "SuccessPercent", "CanaryName", "${ProjectName}-origin-1", {"stat": "Average", "color": "#58a6ff"}]],
+                "period": 300, "region": "${AWS::Region}", "view": "timeSeries",
+                "yAxis": {"left": {"min": 0, "max": 100}},
+                "annotations": {"horizontal": [{"value": 90, "label": "Alarm threshold", "color": "#da3633"}]}
+              }
+            },
+            {
+              "type": "metric",
+              "x": 16, "y": 0, "width": 8, "height": 6,
+              "properties": {
+                "title": "Origin 2 (APAC) - Health",
+                "metrics": [["CloudWatchSynthetics", "SuccessPercent", "CanaryName", "${ProjectName}-origin-2", {"stat": "Average", "color": "#d29922"}]],
+                "period": 300, "region": "${AWS::Region}", "view": "timeSeries",
+                "yAxis": {"left": {"min": 0, "max": 100}},
+                "annotations": {"horizontal": [{"value": 90, "label": "Alarm threshold", "color": "#da3633"}]}
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 6, "width": 12, "height": 6,
+              "properties": {
+                "title": "Canary Duration (ms)",
+                "metrics": [
+                  ["CloudWatchSynthetics", "Duration", "CanaryName", "${ProjectName}-origin-0", {"stat": "Average", "label": "Origin 0", "color": "#3fb950"}],
+                  ["CloudWatchSynthetics", "Duration", "CanaryName", "${ProjectName}-origin-1", {"stat": "Average", "label": "Origin 1", "color": "#58a6ff"}],
+                  ["CloudWatchSynthetics", "Duration", "CanaryName", "${ProjectName}-origin-2", {"stat": "Average", "label": "Origin 2", "color": "#d29922"}]
+                ],
+                "period": 300, "region": "${AWS::Region}", "view": "timeSeries"
+              }
+            },
+            {
+              "type": "alarm",
+              "x": 12, "y": 6, "width": 12, "height": 6,
+              "properties": {
+                "title": "Alarm Status",
+                "alarms": [
+                  "${CanaryAlarmOrigin0.Arn}",
+                  "${CanaryAlarmOrigin1.Arn}",
+                  "${CanaryAlarmOrigin2.Arn}"
+                ]
+              }
+            }
+          ]
+        }
+
+
 Outputs:
   DistributionUrl:
     Description: CloudFront distribution URL
