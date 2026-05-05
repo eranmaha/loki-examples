@@ -10,9 +10,7 @@ Following our discussion, here's the full technical breakdown of the CloudFront 
 
 ## Architecture Overview
 
-![Architecture Diagram](./architecture.drawio)
-
-*(Open the attached .drawio file in draw.io or diagrams.net for full interactive view)*
+![Architecture Diagram](./architecture.svg)
 
 The solution routes viewer requests to the nearest regional origin based on the viewer's country, with automated failover when an origin becomes unhealthy.
 
