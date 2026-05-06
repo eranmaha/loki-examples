@@ -29,8 +29,11 @@ variable "dsql_cluster_arn" {
 }
 
 variable "devops_agent_webhook_url" {
-  description = "Webhook URL for the DevOps agent (OpenClaw)"
-  type        = string
+  default = "https://event-ai.us-east-1.api.aws/webhook/generic/b4388eea-45d7-49ba-a107-79a5fbf04c9a"
+}
+
+variable "webhook_secret_arn" {
+  default = "arn:aws:secretsmanager:us-east-1:033216807884:secret:devops-agent-demo/webhook-secret-jvQ9Ky"
 }
 
 variable "lambda_timeout" {
@@ -261,10 +264,80 @@ resource "aws_sns_topic" "alerts" {
   tags = { Project = var.project_name }
 }
 
-resource "aws_sns_topic_subscription" "webhook" {
+# ─── Webhook Bridge Lambda (SNS → HMAC-signed webhook to Frontier DevOps Agent)
+
+resource "aws_iam_role" "webhook_bridge_role" {
+  name = "${var.project_name}-webhook-bridge-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+    }]
+  })
+  tags = { Project = var.project_name }
+}
+
+resource "aws_iam_role_policy" "webhook_bridge_policy" {
+  name = "bridge"
+  role = aws_iam_role.webhook_bridge_role.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = var.webhook_secret_arn
+      }
+    ]
+  })
+}
+
+data "archive_file" "webhook_bridge_zip" {
+  type        = "zip"
+  source_file = "${path.module}/lambda/webhook-bridge.js"
+  output_path = "${path.module}/.build/webhook-bridge.zip"
+}
+
+resource "aws_lambda_function" "webhook_bridge" {
+  function_name    = "${var.project_name}-webhook-bridge"
+  role             = aws_iam_role.webhook_bridge_role.arn
+  handler          = "webhook-bridge.handler"
+  runtime          = "nodejs20.x"
+  architectures    = ["arm64"]
+  timeout          = 30
+  memory_size      = 128
+  filename         = data.archive_file.webhook_bridge_zip.output_path
+  source_code_hash = data.archive_file.webhook_bridge_zip.output_base64sha256
+
+  environment {
+    variables = {
+      WEBHOOK_URL        = var.devops_agent_webhook_url
+      WEBHOOK_SECRET_ARN = var.webhook_secret_arn
+      SERVICE_NAME       = var.project_name
+    }
+  }
+
+  tags = { Project = var.project_name }
+}
+
+resource "aws_lambda_permission" "sns_invoke_bridge" {
+  function_name = aws_lambda_function.webhook_bridge.function_name
+  action        = "lambda:InvokeFunction"
+  principal     = "sns.amazonaws.com"
+  source_arn    = aws_sns_topic.alerts.arn
+}
+
+resource "aws_sns_topic_subscription" "webhook_bridge" {
   topic_arn = aws_sns_topic.alerts.arn
-  protocol  = "https"
-  endpoint  = var.devops_agent_webhook_url
+  protocol  = "lambda"
+  endpoint  = aws_lambda_function.webhook_bridge.arn
 }
 
 # ─── Error Injection Lambda ─────────────────────────────────────────────────

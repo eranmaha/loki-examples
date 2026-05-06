@@ -40,7 +40,7 @@ async function queryDb() {
   // Ensure table exists
   await client.query(`
     CREATE TABLE IF NOT EXISTS app_events (
-      id SERIAL PRIMARY KEY,
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
       event_type VARCHAR(50),
       message TEXT,
       created_at TIMESTAMP DEFAULT NOW()
