@@ -101,13 +101,14 @@ export class ResearchAgentWebStack extends cdk.Stack {
       architecture: lambda.Architecture.ARM_64,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambda')),
-      timeout: cdk.Duration.seconds(120),
-      memorySize: 256,
+      timeout: cdk.Duration.seconds(300),
+      memorySize: 512,
       vpc,
       vpcSubnets: { subnets: [privateSubnet1, privateSubnet2] },
       securityGroups: [lambdaSg],
       environment: {
         AGENTCORE_RUNTIME_ID: 'myresearchagent_myresearchagent-FYaWyF9elX',
+        RESILIENCE_RUNTIME_ID: 'awsInfraRecSpec_awsinframrecspec-epROb3EMc3',
         AWS_REGION_NAME: 'us-east-1',
       },
     });
