@@ -1,10 +1,12 @@
 import json
 import os
 import uuid
+import re
 import boto3
 
 RUNTIME_ID = os.environ['AGENTCORE_RUNTIME_ID']
 REGION = os.environ.get('AWS_REGION_NAME', 'us-east-1')
+RUNTIME_ARN = f'arn:aws:bedrock-agentcore:us-east-1:033216807884:runtime/{RUNTIME_ID}'
 
 
 def handler(event, context):
@@ -21,42 +23,33 @@ def handler(event, context):
             }
 
         client = boto3.client('bedrock-agentcore', region_name=REGION)
-
-        # Generate trace ID for observability
         trace_id = str(uuid.uuid4())
 
-        # Invoke the AgentCore runtime for full end-to-end tracing
         response = client.invoke_agent_runtime(
-            agentRuntimeArn=f'arn:aws:bedrock-agentcore:us-east-1:033216807884:runtime/{RUNTIME_ID}',
+            agentRuntimeArn=RUNTIME_ARN,
             contentType='application/json',
             accept='application/json',
             traceId=trace_id,
-            payload=json.dumps({
-                'prompt': prompt,
-            }).encode('utf-8'),
+            payload=json.dumps({'prompt': prompt}).encode('utf-8'),
         )
 
-        # Read streaming response
+        # Parse SSE stream: "data: \"text\"\n\n"
+        raw = response['response'].read().decode('utf-8')
         result_text = ''
-        if 'body' in response:
-            response_body = response['body'].read().decode('utf-8')
-            # AgentCore streams events, collect text
-            for line in response_body.split('\n'):
-                line = line.strip()
-                if not line:
-                    continue
+        for line in raw.split('\n'):
+            line = line.strip()
+            if line.startswith('data: '):
+                data_value = line[6:]  # Remove "data: " prefix
                 try:
-                    event_data = json.loads(line)
-                    if isinstance(event_data, dict):
-                        # Handle different response formats
-                        if 'data' in event_data:
-                            result_text += event_data['data']
-                        elif 'text' in event_data:
-                            result_text += event_data['text']
-                        elif 'content' in event_data:
-                            result_text += event_data['content']
+                    # Each chunk is a JSON string
+                    chunk = json.loads(data_value)
+                    if isinstance(chunk, str):
+                        result_text += chunk
                 except json.JSONDecodeError:
-                    result_text += line
+                    result_text += data_value
+
+        # Unescape newlines
+        result_text = result_text.replace('\\n', '\n')
 
         return {
             'statusCode': 200,
@@ -69,10 +62,10 @@ def handler(event, context):
 
     except Exception as e:
         error_msg = str(e)
-        print(f'Error: {error_msg}')
+        print(f'AgentCore error: {error_msg}')
 
-        # Fallback to inline agent if runtime is cold/unavailable
-        if 'ResourceNotFound' in error_msg or 'not found' in error_msg.lower():
+        # Fallback to inline agent if runtime unavailable
+        if any(x in error_msg for x in ['ResourceNotFound', 'not found', 'timeout', 'Timeout']):
             return fallback_inline_agent(prompt, context)
 
         return {
@@ -94,9 +87,7 @@ def fallback_inline_agent(prompt, context):
             foundationModel='us.anthropic.claude-sonnet-4-6',
             instruction=(
                 'You are a helpful research assistant. '
-                'Answer questions thoroughly using your knowledge. '
-                'If asked to browse websites or look up current information, '
-                'do your best to provide accurate and helpful responses.'
+                'Answer questions thoroughly using your knowledge.'
             ),
         )
 
