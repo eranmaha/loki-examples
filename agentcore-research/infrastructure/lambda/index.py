@@ -60,45 +60,8 @@ def handler(event, context):
         if prd_content:
             payload['prd_content'] = prd_content
 
-        client = boto3.client('bedrock-agentcore', region_name=REGION,
-            config=Config(read_timeout=25, connect_timeout=5))
-        trace_id = str(uuid.uuid4())
-
-        runtime_arn = f'arn:aws:bedrock-agentcore:us-east-1:{ACCOUNT_ID}:runtime/{runtime_id}'
-
-        response = client.invoke_agent_runtime(
-            agentRuntimeArn=runtime_arn,
-            contentType='application/json',
-            accept='application/json',
-            traceId=trace_id,
-            payload=json.dumps(payload).encode('utf-8'),
-        )
-
-        # Parse SSE stream
-        raw = response['response'].read().decode('utf-8')
-        result_text = ''
-        for line in raw.split('\n'):
-            line = line.strip()
-            if line.startswith('data: '):
-                data_value = line[6:]
-                try:
-                    chunk = json.loads(data_value)
-                    if isinstance(chunk, str):
-                        result_text += chunk
-                except json.JSONDecodeError:
-                    result_text += data_value
-
-        result_text = result_text.replace('\\n', '\n')
-
-        return {
-            'statusCode': 200,
-            'headers': cors_headers(),
-            'body': json.dumps({
-                'response': result_text or 'No response generated.',
-                'traceId': trace_id,
-                'agent': agent_id,
-            }),
-        }
+        # Use inline agent directly (faster, avoids AgentCore cold start timeout)
+        return invoke_inline(prompt, prd_content, agent_id, context)
 
     except Exception as e:
         error_msg = str(e)
