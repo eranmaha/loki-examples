@@ -2,7 +2,7 @@ import json
 import os
 import uuid
 import boto3
-import base64
+from botocore.config import Config
 
 REGION = os.environ.get('AWS_REGION_NAME', 'us-east-1')
 ACCOUNT_ID = '033216807884'
@@ -60,7 +60,8 @@ def handler(event, context):
         if prd_content:
             payload['prd_content'] = prd_content
 
-        client = boto3.client('bedrock-agentcore', region_name=REGION)
+        client = boto3.client('bedrock-agentcore', region_name=REGION,
+            config=Config(read_timeout=25, connect_timeout=5))
         trace_id = str(uuid.uuid4())
 
         runtime_arn = f'arn:aws:bedrock-agentcore:us-east-1:{ACCOUNT_ID}:runtime/{runtime_id}'
@@ -102,6 +103,11 @@ def handler(event, context):
     except Exception as e:
         error_msg = str(e)
         print(f'Error: {error_msg}')
+
+        # Fallback to inline agent on timeout or runtime unavailable
+        if any(x in error_msg for x in ['ResourceNotFound', 'not found', 'timeout', 'Timeout', 'ReadTimeout', 'ConnectTimeout']):
+            return invoke_inline(prompt, prd_content, agent_id, context)
+
         return {
             'statusCode': 500,
             'headers': cors_headers(),

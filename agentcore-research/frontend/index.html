@@ -358,7 +358,7 @@
                     agentMsg.innerHTML = `<span class="agent-badge">${badge}</span>\n${escapeHtml(data.response || 'No response received.')}`;
                 } else {
                     agentMsg.className = 'message error';
-                    agentMsg.textContent = `Error: ${data.error || 'Unknown error'}`;
+                    agentMsg.textContent = `Error (${res.status}): ${data.error || data.message || JSON.stringify(data)}`;
                 }
                 msgs.appendChild(agentMsg);
             } catch (err) {
