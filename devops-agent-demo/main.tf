@@ -219,23 +219,32 @@ resource "aws_cloudwatch_log_group" "lambda_logs" {
   tags              = { Project = var.project_name }
 }
 
+resource "aws_cloudwatch_log_metric_filter" "app_errors" {
+  name           = "${var.project_name}-app-errors"
+  log_group_name = aws_cloudwatch_log_group.lambda_logs.name
+  pattern        = "{ $.metric = \"AppError\" }"
+
+  metric_transformation {
+    name      = "AppErrors"
+    namespace = var.project_name
+    value     = "1"
+  }
+}
+
 resource "aws_cloudwatch_metric_alarm" "error_rate" {
   alarm_name          = "${var.project_name}-error-rate"
   comparison_operator = "GreaterThanOrEqualToThreshold"
   evaluation_periods  = 1
-  metric_name         = "Errors"
-  namespace           = "AWS/Lambda"
+  metric_name         = "AppErrors"
+  namespace           = var.project_name
   period              = 60
   statistic           = "Sum"
   threshold           = 3
-  alarm_description   = "Lambda error rate >= 3 errors in 1 minute"
+  alarm_description   = "Application error rate >= 3 errors in 1 minute"
   treat_missing_data  = "notBreaching"
-  dimensions = {
-    FunctionName = aws_lambda_function.app.function_name
-  }
-  alarm_actions = [aws_sns_topic.alerts.arn]
-  ok_actions    = [aws_sns_topic.alerts.arn]
-  tags          = { Project = var.project_name }
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+  tags                = { Project = var.project_name }
 }
 
 resource "aws_cloudwatch_metric_alarm" "timeout_rate" {

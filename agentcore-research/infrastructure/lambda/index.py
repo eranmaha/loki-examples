@@ -27,7 +27,7 @@ def handler(event, context):
             endSession=False,
             enableTrace=False,
             sessionId=context.aws_request_id,
-            foundationModel='anthropic.claude-sonnet-4-20250514-v1:0',
+            foundationModel='us.anthropic.claude-sonnet-4-20250514-v1:0',
             instruction=(
                 'You are a helpful research assistant. '
                 'Answer questions thoroughly using your knowledge. '

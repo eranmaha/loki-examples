@@ -98,6 +98,8 @@ exports.handler = async (event) => {
       };
     } catch (err) {
       console.error('[ERROR]', err.message, err.stack);
+      // Log in a format that CloudWatch metric filter can catch
+      console.error(JSON.stringify({ metric: 'AppError', error: err.message }));
       return {
         statusCode: 500,
         headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
