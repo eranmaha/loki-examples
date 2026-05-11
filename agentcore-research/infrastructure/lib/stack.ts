@@ -5,6 +5,7 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigateway from 'aws-cdk-lib/aws-apigatewayv2';
 import * as apigatewayIntegrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as apigatewayAuthorizers from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
@@ -22,7 +23,6 @@ export class ResearchAgentWebStack extends cdk.Stack {
       vpcId: 'vpc-0c7f243ebc19651b6',
     });
 
-    // Create private subnets for the Lambda + VPC endpoint
     const privateSubnet1 = new ec2.PrivateSubnet(this, 'PrivateSubnet1', {
       vpcId: vpc.vpcId,
       cidrBlock: '10.0.10.0/24',
@@ -39,15 +39,13 @@ export class ResearchAgentWebStack extends cdk.Stack {
     });
     cdk.Tags.of(privateSubnet2).add('Name', 'research-agent-private-1b');
 
-    // NAT Gateway for outbound from private subnets (agent needs internet for browsing)
     const eip = new ec2.CfnEIP(this, 'NatEip', { domain: 'vpc' });
     const natGw = new ec2.CfnNatGateway(this, 'NatGateway', {
-      subnetId: 'subnet-06a6490723bda459b', // public subnet us-east-1a
+      subnetId: 'subnet-06a6490723bda459b',
       allocationId: eip.attrAllocationId,
     });
     cdk.Tags.of(natGw).add('Name', 'research-agent-nat');
 
-    // Route table for private subnets → NAT
     privateSubnet1.addRoute('DefaultRoute', {
       routerId: natGw.ref,
       routerType: ec2.RouterType.NAT_GATEWAY,
@@ -59,11 +57,19 @@ export class ResearchAgentWebStack extends cdk.Stack {
       destinationCidrBlock: '0.0.0.0/0',
     });
 
-    // Security group for Lambda
     const lambdaSg = new ec2.SecurityGroup(this, 'LambdaSg', {
       vpc,
-      description: 'Lambda to invoke AgentCore via VPC endpoint',
+      description: 'Lambda security group',
       allowAllOutbound: true,
+    });
+
+    // === DynamoDB: Task state table ===
+    const taskTable = new dynamodb.Table(this, 'TaskTable', {
+      tableName: 'research-agent-tasks',
+      partitionKey: { name: 'taskId', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: 'ttl',
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
     // === Cognito ===
@@ -84,22 +90,19 @@ export class ResearchAgentWebStack extends cdk.Stack {
     const userPoolClient = new cognito.UserPoolClient(this, 'ResearchAgentClient', {
       userPool,
       userPoolClientName: 'research-agent-web',
-      authFlows: {
-        userSrp: true,
-        userPassword: true,
-      },
+      authFlows: { userSrp: true, userPassword: true },
       generateSecret: false,
       accessTokenValidity: cdk.Duration.hours(1),
       idTokenValidity: cdk.Duration.hours(1),
       refreshTokenValidity: cdk.Duration.days(30),
     });
 
-    // === Backend Lambda (invokes AgentCore runtime) ===
-    const backendFn = new lambda.Function(this, 'AgentInvokeFn', {
-      functionName: 'research-agent-invoke',
+    // === Worker Lambda (async, runs the agent — up to 5 min) ===
+    const workerFn = new lambda.Function(this, 'AgentWorkerFn', {
+      functionName: 'research-agent-worker',
       runtime: lambda.Runtime.PYTHON_3_12,
       architecture: lambda.Architecture.ARM_64,
-      handler: 'index.handler',
+      handler: 'worker.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambda')),
       timeout: cdk.Duration.seconds(300),
       memorySize: 512,
@@ -109,12 +112,12 @@ export class ResearchAgentWebStack extends cdk.Stack {
       environment: {
         AGENTCORE_RUNTIME_ID: 'myresearchagent_myresearchagent-FYaWyF9elX',
         RESILIENCE_RUNTIME_ID: 'awsInfraRecSpec_awsinframrecspec-epROb3EMc3',
+        TASK_TABLE: taskTable.tableName,
         AWS_REGION_NAME: 'us-east-1',
       },
     });
 
-    // Grant Lambda permission to invoke AgentCore
-    backendFn.addToRolePolicy(new iam.PolicyStatement({
+    workerFn.addToRolePolicy(new iam.PolicyStatement({
       actions: [
         'bedrock-agentcore:InvokeAgentRuntime',
         'bedrock-agentcore:InvokeRuntime',
@@ -125,34 +128,58 @@ export class ResearchAgentWebStack extends cdk.Stack {
       ],
       resources: ['*'],
     }));
+    taskTable.grantReadWriteData(workerFn);
 
-    // === HTTP API Gateway with Cognito JWT Authorizer ===
+    // === API Lambda (kickoff — returns taskId instantly) ===
+    const apiFn = new lambda.Function(this, 'AgentApiFn', {
+      functionName: 'research-agent-api',
+      runtime: lambda.Runtime.PYTHON_3_12,
+      architecture: lambda.Architecture.ARM_64,
+      handler: 'api.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambda')),
+      timeout: cdk.Duration.seconds(10),
+      memorySize: 128,
+      environment: {
+        WORKER_FUNCTION_NAME: workerFn.functionName,
+        TASK_TABLE: taskTable.tableName,
+        AWS_REGION_NAME: 'us-east-1',
+      },
+    });
+
+    workerFn.grantInvoke(apiFn);
+    taskTable.grantReadWriteData(apiFn);
+
+    // === HTTP API Gateway ===
     const httpApi = new apigateway.HttpApi(this, 'ResearchAgentApi', {
       apiName: 'research-agent-api',
       corsPreflight: {
         allowHeaders: ['Content-Type', 'Authorization'],
-        allowMethods: [apigateway.CorsHttpMethod.POST, apigateway.CorsHttpMethod.OPTIONS],
-        allowOrigins: ['*'], // Will restrict to CloudFront domain later
+        allowMethods: [apigateway.CorsHttpMethod.POST, apigateway.CorsHttpMethod.GET, apigateway.CorsHttpMethod.OPTIONS],
+        allowOrigins: ['*'],
       },
     });
 
     const jwtAuthorizer = new apigatewayAuthorizers.HttpJwtAuthorizer(
       'CognitoAuthorizer',
       `https://cognito-idp.us-east-1.amazonaws.com/${userPool.userPoolId}`,
-      {
-        jwtAudience: [userPoolClient.userPoolClientId],
-      }
+      { jwtAudience: [userPoolClient.userPoolClientId] }
     );
 
-    const lambdaIntegration = new apigatewayIntegrations.HttpLambdaIntegration(
-      'AgentIntegration',
-      backendFn
-    );
+    const apiIntegration = new apigatewayIntegrations.HttpLambdaIntegration('ApiIntegration', apiFn);
 
+    // POST /api/invoke — kickoff agent task
     httpApi.addRoutes({
       path: '/api/invoke',
       methods: [apigateway.HttpMethod.POST],
-      integration: lambdaIntegration,
+      integration: apiIntegration,
+      authorizer: jwtAuthorizer,
+    });
+
+    // GET /api/status/{taskId} — poll for result
+    httpApi.addRoutes({
+      path: '/api/status/{taskId}',
+      methods: [apigateway.HttpMethod.GET],
+      integration: apiIntegration,
       authorizer: jwtAuthorizer,
     });
 
@@ -170,9 +197,7 @@ export class ResearchAgentWebStack extends cdk.Stack {
 
     const distribution = new cloudfront.Distribution(this, 'Distribution', {
       defaultBehavior: {
-        origin: origins.S3BucketOrigin.withOriginAccessControl(siteBucket, {
-          originAccessControl: oac,
-        }),
+        origin: origins.S3BucketOrigin.withOriginAccessControl(siteBucket, { originAccessControl: oac }),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
       },
@@ -195,7 +220,6 @@ export class ResearchAgentWebStack extends cdk.Stack {
       ],
     });
 
-    // Deploy frontend
     new s3deploy.BucketDeployment(this, 'DeployFrontend', {
       sources: [s3deploy.Source.asset(path.join(__dirname, '..', '..', 'frontend'))],
       destinationBucket: siteBucket,
@@ -204,18 +228,9 @@ export class ResearchAgentWebStack extends cdk.Stack {
     });
 
     // === Outputs ===
-    new cdk.CfnOutput(this, 'CloudFrontUrl', {
-      value: `https://${distribution.distributionDomainName}`,
-      description: 'Research Agent Web App URL',
-    });
-    new cdk.CfnOutput(this, 'UserPoolId', {
-      value: userPool.userPoolId,
-    });
-    new cdk.CfnOutput(this, 'UserPoolClientId', {
-      value: userPoolClient.userPoolClientId,
-    });
-    new cdk.CfnOutput(this, 'ApiUrl', {
-      value: httpApi.url!,
-    });
+    new cdk.CfnOutput(this, 'CloudFrontUrl', { value: `https://${distribution.distributionDomainName}` });
+    new cdk.CfnOutput(this, 'UserPoolId', { value: userPool.userPoolId });
+    new cdk.CfnOutput(this, 'UserPoolClientId', { value: userPoolClient.userPoolClientId });
+    new cdk.CfnOutput(this, 'ApiUrl', { value: httpApi.url! });
   }
 }

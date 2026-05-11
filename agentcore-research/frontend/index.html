@@ -342,30 +342,61 @@
                     payload.prd_content = uploadedFileContent;
                 }
 
+                // Step 1: Kick off task
                 const res = await fetch(CONFIG.ApiEndpoint, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${idToken}` },
                     body: JSON.stringify(payload),
                 });
 
-                const data = await res.json();
+                const kickoff = await res.json();
+                if (!res.ok || !kickoff.taskId) {
+                    throw new Error(kickoff.error || kickoff.message || 'Failed to start task');
+                }
+
+                // Step 2: Poll for result
+                const taskId = kickoff.taskId;
+                let attempts = 0;
+                const maxAttempts = 60; // 60 * 3s = 3 min max
+                let result = null;
+
+                while (attempts < maxAttempts) {
+                    await sleep(3000);
+                    attempts++;
+
+                    const statusRes = await fetch(`/api/status/${taskId}`, {
+                        headers: { 'Authorization': `Bearer ${idToken}` },
+                    });
+                    const statusData = await statusRes.json();
+
+                    if (statusData.status === 'COMPLETE') {
+                        result = statusData;
+                        break;
+                    } else if (statusData.status === 'FAILED') {
+                        throw new Error(statusData.error || 'Agent task failed');
+                    }
+                    // Update loading text with elapsed time
+                    const elapsed = attempts * 3;
+                    loading.innerHTML = `<span class="loading">${agentLabel} (${elapsed}s)</span>`;
+                }
+
                 loading.remove();
 
-                const agentMsg = document.createElement('div');
-                if (res.ok) {
-                    agentMsg.className = 'message agent';
-                    const badge = selectedAgent === 'resilience' ? '🛡️ RESILIENCE' : '🔍 RESEARCH';
-                    agentMsg.innerHTML = `<span class="agent-badge">${badge}</span>\n${escapeHtml(data.response || 'No response received.')}`;
-                } else {
-                    agentMsg.className = 'message error';
-                    agentMsg.textContent = `Error (${res.status}): ${data.error || data.message || JSON.stringify(data)}`;
+                if (!result) {
+                    throw new Error('Task timed out after 3 minutes');
                 }
+
+                const agentMsg = document.createElement('div');
+                agentMsg.className = 'message agent';
+                const badge = selectedAgent === 'resilience' ? '🛡️ RESILIENCE' : '🔍 RESEARCH';
+                agentMsg.innerHTML = `<span class="agent-badge">${badge}</span>\n${escapeHtml(result.response || 'No response received.')}`;
                 msgs.appendChild(agentMsg);
+
             } catch (err) {
                 loading.remove();
                 const errMsg = document.createElement('div');
                 errMsg.className = 'message error';
-                errMsg.textContent = `Network error: ${err.message}`;
+                errMsg.textContent = `Error: ${err.message}`;
                 msgs.appendChild(errMsg);
             }
 
@@ -385,6 +416,8 @@
             div.textContent = text;
             return div.innerHTML;
         }
+
+        function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
     </script>
 </body>
 </html>
