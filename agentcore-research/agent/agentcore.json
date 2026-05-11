@@ -15,7 +15,13 @@
       "codeLocation": "app/myresearchagent/",
       "runtimeVersion": "PYTHON_3_14",
       "networkMode": "PUBLIC",
-      "protocol": "HTTP"
+      "protocol": "HTTP",
+      "observability": {
+        "enabled": true,
+        "tracing": true,
+        "logging": true,
+        "metrics": true
+      }
     }
   ],
   "memories": [],

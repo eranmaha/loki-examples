@@ -115,6 +115,7 @@ export class ResearchAgentWebStack extends cdk.Stack {
     // Grant Lambda permission to invoke AgentCore
     backendFn.addToRolePolicy(new iam.PolicyStatement({
       actions: [
+        'bedrock-agentcore:InvokeAgentRuntime',
         'bedrock-agentcore:InvokeRuntime',
         'bedrock-agentcore:InvokeRuntimeStreaming',
         'bedrock:InvokeModel',
