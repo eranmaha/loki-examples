@@ -46,17 +46,19 @@
 </head>
 <body>
     <div class="container">
-        <h1>🌍 Geo Routing v2 — Route 53 Latency-Based</h1>
-        <p class="subtitle">DNS resolves to lowest-latency origin • Health checks auto-failover • Zero custom code</p>
+        <h1>🌍 Geo Routing v2 — Route 53 Latency + CloudFront WAF</h1>
+        <p class="subtitle">CloudFront (WAF/DDoS) → Route 53 (Latency DNS) → Nearest healthy origin • Zero custom code</p>
 
         <div class="architecture">
             <pre>
-  Client → Route 53 (Latency Policy + Health Checks) → Lowest-latency healthy origin
-                        │
-         ┌──────────────┼──────────────┐
-         ▼              ▼              ▼
-    us-east-1      eu-west-1    ap-southeast-1
-    (Americas)      (EMEA)         (APAC)
+  Client → CloudFront (WAF + Shield DDoS) → Origin: api.geo.emhadip.people.aws.dev
+                    dro2fulrmreh4.cloudfront.net          │
+                                                Route 53 Latency Routing
+                                                         │
+                              ┌──────────────────┼──────────────────┐
+                              ▼                  ▼                  ▼
+                         us-east-1          eu-west-1      ap-southeast-1
+                         (Americas)          (EMEA)           (APAC)
             </pre>
         </div>
 
@@ -91,8 +93,10 @@
         </div>
 
         <div class="controls">
-            <button class="btn" onclick="testAllOrigins()">🚀 Test All Origins</button>
-            <button class="btn" onclick="continuousTest()" id="continuousBtn">🔄 Continuous Test (5s)</button>
+            <button class="btn" onclick="testAllOrigins()">🚀 Test All Origins (Direct)</button>
+            <button class="btn" onclick="testCloudFront()" style="background:#8C4FFF;">☁️ Test via CloudFront</button>
+            <button class="btn" onclick="testR53Direct()" style="background:#01A88D;">🌐 Test via R53 DNS</button>
+            <button class="btn" onclick="continuousTest()" id="continuousBtn">🔄 Continuous (5s)</button>
             <button class="btn danger" onclick="stopTest()" id="stopBtn" disabled>⏹ Stop</button>
         </div>
 
@@ -108,6 +112,8 @@
         };
 
         const STATUS_API = 'https://h1spol3qpl.execute-api.us-east-1.amazonaws.com/status';
+        const CLOUDFRONT_URL = 'https://dro2fulrmreh4.cloudfront.net/';
+        const R53_URL = 'https://api.geo.emhadip.people.aws.dev/';
         let intervalId = null;
         let r53Health = { americas: true, emea: true, apac: true };
 
@@ -197,6 +203,34 @@
             document.getElementById('continuousBtn').disabled = false;
             document.getElementById('stopBtn').disabled = true;
             document.getElementById('pollStatus').textContent = 'Stopped';
+        }
+
+        async function testCloudFront() {
+            logEntry('── Testing via CloudFront (WAF protected) ──', 'info');
+            const start = performance.now();
+            try {
+                const res = await fetch(CLOUDFRONT_URL);
+                const elapsed = Math.round(performance.now() - start);
+                const data = await res.json();
+                logEntry(`☁️ CloudFront → ${data.region} (${data.label}): ${elapsed}ms`, 'success');
+                document.getElementById('pollStatus').textContent = `☁️ CloudFront routed to: ${data.label} (${elapsed}ms) — WAF + Shield active`;
+            } catch (err) {
+                logEntry(`❌ CloudFront: FAILED — ${err.message}`, 'fail');
+            }
+        }
+
+        async function testR53Direct() {
+            logEntry('── Testing via Route 53 DNS (direct, no CF) ──', 'info');
+            const start = performance.now();
+            try {
+                const res = await fetch(R53_URL);
+                const elapsed = Math.round(performance.now() - start);
+                const data = await res.json();
+                logEntry(`🌐 R53 DNS → ${data.region} (${data.label}): ${elapsed}ms`, 'success');
+                document.getElementById('pollStatus').textContent = `🌐 R53 latency routing selected: ${data.label} (${elapsed}ms)`;
+            } catch (err) {
+                logEntry(`❌ R53 Direct: FAILED — ${err.message}`, 'fail');
+            }
         }
 
         function updateCard(name, status, latency, healthy) {

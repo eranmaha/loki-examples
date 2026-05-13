@@ -1,131 +1,167 @@
-# Geo Routing v2 — Route 53 Latency-Based Routing with Health Checks
+# Geo Routing v2 — Route 53 Latency-Based Routing + CloudFront WAF/DDoS
 
-## Problem Statement
+## Overview
 
-The CloudFront KVS geo-routing solution (v1) requires:
-- CloudFront Function code for routing logic
-- Key Value Store management
-- Health checker Lambda (polling every 60s)
-- Maintenance API for toggling origins
-- SSM parameters for health state
-
-**Customer feedback:** Too many moving parts. Want something simpler that "just works."
-
-## Proposed Solution
-
-Replace the entire custom routing stack with **Route 53 Latency-Based Routing + Native Health Checks**.
-
-Route 53 handles both routing AND health — zero custom code needed.
+Production-grade geo-routing using **Route 53 latency-based DNS**, **CloudFront WAF/DDoS protection**, and **API Gateway custom domains** with automatic health-check failover. Zero custom routing code.
 
 ## Architecture
 
 ```
-                         ┌─────────────────────────────────┐
-                         │         Route 53                 │
-                         │   Latency-Based Routing Policy   │
-                         │   + Health Checks (built-in)     │
-                         └──────────┬──────────────────────┘
-                                    │
-              ┌─────────────────────┼─────────────────────┐
-              │                     │                     │
-              ▼                     ▼                     ▼
-    ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
-    │  Origin: us-east-1│  │  Origin: eu-west-1│  │  Origin: ap-south-1│
-    │  (Americas)       │  │  (EMEA)           │  │  (APAC)            │
-    │                   │  │                   │  │                    │
-    │  ALB / API GW /   │  │  ALB / API GW /   │  │  ALB / API GW /    │
-    │  Lambda URL       │  │  Lambda URL       │  │  Lambda URL        │
-    └──────────────────┘  └──────────────────┘  └──────────────────┘
+                    ┌─────────────────────────────────────────────┐
+                    │              CloudFront                       │
+                    │   • WAF (Common Rules + Bad Inputs)           │
+                    │   • AWS Shield Standard (DDoS)                │
+                    │   • HTTPS termination                         │
+                    │   • Global edge caching                       │
+                    │                                               │
+                    │   Distribution: dro2fulrmreh4.cloudfront.net  │
+                    └──────────────────┬──────────────────────────┘
+                                       │
+                                       │ Origin: api.geo.emhadip.people.aws.dev
+                                       │
+                    ┌──────────────────▼──────────────────────────┐
+                    │              Route 53                         │
+                    │   Latency-Based Routing + Health Checks       │
+                    │                                               │
+                    │   Zone: geo.emhadip.people.aws.dev           │
+                    │   Record: api.geo.emhadip.people.aws.dev     │
+                    └──────────┬───────────┬───────────┬──────────┘
+                               │           │           │
+              ┌────────────────▼─┐  ┌──────▼────────┐  ┌▼────────────────┐
+              │  us-east-1        │  │  eu-west-1     │  │  ap-southeast-1  │
+              │  Americas         │  │  EMEA          │  │  APAC            │
+              │                   │  │                │  │                  │
+              │  Custom Domain    │  │  Custom Domain │  │  Custom Domain   │
+              │  → API Gateway    │  │  → API Gateway │  │  → API Gateway   │
+              │  → Lambda (arm64) │  │  → Lambda      │  │  → Lambda        │
+              └───────────────────┘  └────────────────┘  └──────────────────┘
 ```
 
 ## How It Works
 
-### 1. Latency-Based Routing
-- Route 53 maintains a latency database between AWS regions and client networks
-- DNS resolves to the origin with **lowest latency** from the client's resolver location
-- No geo-mapping tables, no CloudFront Functions — AWS handles it natively
+1. **Client request** → CloudFront edge (WAF inspects, Shield protects)
+2. **CloudFront** → resolves origin `api.geo.emhadip.people.aws.dev` from edge POP
+3. **Route 53** → returns lowest-latency healthy backend (CNAME to regional API GW custom domain)
+4. **API Gateway** → custom domain with ACM cert → routes to Lambda
+5. **Lambda** → responds with region info
 
-### 2. Health Checks (Built-in)
-- Route 53 health checks ping each origin every 10s or 30s (configurable)
-- If an origin fails (3 consecutive checks), Route 53 **automatically stops routing** to it
-- Traffic shifts to the next-best-latency origin — no Lambda, no KVS updates, no SSM
-- When the origin recovers, traffic resumes automatically
+### Failover
+- Route 53 health checks ping `/health` on each regional API GW every **10 seconds**
+- After **3 consecutive failures** (~30s), origin is marked unhealthy
+- DNS automatically stops returning the unhealthy origin
+- Traffic shifts to next-lowest-latency healthy origin
+- Recovery is automatic when health returns
 
-### 3. Failover Behavior
+## Live URLs
+
+| Resource | URL |
+|----------|-----|
+| **CloudFront (WAF protected)** | `https://dro2fulrmreh4.cloudfront.net/` |
+| **Direct DNS (R53 latency)** | `https://api.geo.emhadip.people.aws.dev/` |
+| **Test Client** | `https://dro2fulrmreh4.cloudfront.net/geo-routing.html` |
+| Americas (direct) | `https://zp1q92gi4g.execute-api.us-east-1.amazonaws.com/` |
+| EMEA (direct) | `https://qis8ziofkc.execute-api.eu-west-1.amazonaws.com/` |
+| APAC (direct) | `https://q2kqzrn8zc.execute-api.ap-southeast-1.amazonaws.com/` |
+
+## AWS Resources
+
+| Resource | Identifier | Region |
+|----------|-----------|--------|
+| CloudFront Distribution | `EU5BY9YOEOVHR` | Global |
+| WAF Web ACL | `geo-routing-waf` | Global |
+| R53 Hosted Zone | `Z041924975F55CKBD4RI` | Global |
+| Health Check (Americas) | `591d4d0d-044d-45d9-acd1-9ea6f73b0bad` | Global |
+| Health Check (EMEA) | `240f864c-4c0e-4386-b245-f47dbb4ff5e4` | Global |
+| Health Check (APAC) | `ab055823-7ae9-4c5b-950f-1264914cbc4e` | Global |
+| API GW (Americas) | `zp1q92gi4g` | us-east-1 |
+| API GW (EMEA) | `qis8ziofkc` | eu-west-1 |
+| API GW (APAC) | `q2kqzrn8zc` | ap-southeast-1 |
+| Custom Domain (all regions) | `api.geo.emhadip.people.aws.dev` | Multi |
+| Lambda (Americas) | `geo-routing-dns-origin-americas` | us-east-1 |
+| Lambda (EMEA) | `geo-routing-dns-origin-emea` | eu-west-1 |
+| Lambda (APAC) | `geo-routing-dns-origin-apac` | ap-southeast-1 |
+| Status API | `h1spol3qpl` | us-east-1 |
+| ACM Cert (us-east-1) | `e02537a6-cba1-4cad-aabf-76e19f26f21a` | us-east-1 |
+| ACM Cert (eu-west-1) | `89d6f308-1018-4773-a23c-622f0a9cfcd4` | eu-west-1 |
+| ACM Cert (ap-southeast-1) | `c79c5404-d7c3-4e7f-bccd-1d672fee29c6` | ap-southeast-1 |
+
+## Demo Script
+
+```bash
+# Show current health status
+./failover.sh status
+
+# Inject failure (simulate regional outage)
+./failover.sh inject emea
+
+# Wait ~30s for R53 to detect failure
+# Watch test client: EMEA goes red, traffic routes elsewhere
+
+# Restore
+./failover.sh revert emea
+
+# Wait ~30s for R53 to detect recovery
 ```
-Normal:    Client (Tel Aviv) → DNS → eu-west-1 (lowest latency)
-Failure:   eu-west-1 goes down → Route 53 detects in ~30s → routes to us-east-1
-Recovery:  eu-west-1 comes back → Route 53 resumes routing in ~30s
-```
 
-## Components
+## Comparison: v1 (CloudFront KVS) vs v2 (Route 53 + CloudFront)
 
-| Component | Purpose | Managed By |
-|-----------|---------|------------|
-| Route 53 Hosted Zone | DNS resolution | AWS |
-| Latency-based records (x3) | One per origin region | Terraform/CFN |
-| Health Checks (x3) | Monitor each origin | Route 53 (native) |
-| Origin (x3) | Sample app in 3 regions | Lambda Function URL or ALB |
-| CloudWatch Alarms | Alert on health check failure | Optional |
+| Aspect | v1 (CF Function + KVS) | v2 (R53 + CF) |
+|--------|------------------------|---------------|
+| Routing logic | Custom CF Function | AWS-managed R53 latency |
+| Health checking | Custom Lambda (60s) | Native R53 (10s) |
+| Failover speed | ~60s | ~30s |
+| WAF/DDoS | ✅ (CloudFront) | ✅ (CloudFront) |
+| Components to manage | 7+ | 4 (CF, R53, API GW, Lambda) |
+| Custom code | ~300 lines | 0 lines (IaC only) |
+| TLS | Managed by CF | ACM certs + custom domains |
+| Routing accuracy | Country-level mapping | Network-latency-level |
 
-## Demo Origins (for this project)
+## Security
 
-| Origin | Region | Endpoint |
-|--------|--------|----------|
-| Americas | us-east-1 | Lambda Function URL |
-| EMEA | eu-west-1 | Lambda Function URL |
-| APAC | ap-southeast-1 | Lambda Function URL |
-
-Each origin serves a simple JSON response with region info + a `/health` endpoint.
-
-## Comparison: v1 (CloudFront KVS) vs v2 (Route 53)
-
-| Aspect | v1 (CloudFront KVS) | v2 (Route 53) |
-|--------|---------------------|---------------|
-| Routing logic | Custom CF Function + KVS | AWS-managed latency DB |
-| Health checking | Custom Lambda (every 60s) | Native R53 checks (10-30s) |
-| Failover speed | ~60s (Lambda poll interval) | ~30s (3 × 10s checks) |
-| Maintenance API | Custom Lambda + API GW + SSM | None needed (R53 console or API) |
-| Components to manage | 7+ (Function, KVS, Lambda, API, SSM, EventBridge, origins) | 3 (R53 records, health checks, origins) |
-| Code to maintain | ~300 lines | ~0 lines (IaC only) |
-| Cost | CF Function invocations + Lambda + API GW | R53 queries ($0.60/M) + health checks ($0.50/check/mo) |
-| Routing granularity | Country-level (custom mapping) | Network-latency-level (more accurate) |
-| CDN caching | Yes (CloudFront) | Add CloudFront in front if needed |
-
-## Optional Enhancements
-
-1. **CloudFront in front** — Add a CF distribution with the R53 domain as origin for caching + HTTPS termination
-2. **Weighted routing** — Combine latency with weighted records for canary deploys (90/10 split)
-3. **Failover + Latency combo** — Primary/secondary per region for multi-AZ resilience
-4. **CloudWatch integration** — Alarm on health check status → SNS notification
+- ✅ **WAF** — AWS Managed Rules (Common + Known Bad Inputs)
+- ✅ **Shield Standard** — DDoS protection (automatic with CloudFront)
+- ✅ **HTTPS everywhere** — ACM certs on API GW custom domains + CloudFront
+- ✅ **No public Lambda access** — API GW only (IAM invoke permission)
+- ✅ **No hardcoded secrets**
 
 ## Cost Estimate
 
 | Resource | Monthly Cost |
 |----------|-------------|
-| Route 53 Hosted Zone | $0.50 |
-| Health Checks (3 × HTTPS) | $2.25 ($0.75 each) |
-| DNS Queries | ~$0.60 per 1M queries |
-| Lambda origins (3 regions) | ~$0-3 (demo traffic) |
-| **Total** | **~$3-6/mo** |
+| CloudFront | ~$1-5 (data transfer) |
+| WAF | ~$6 (1 Web ACL + 2 rules) |
+| Route 53 Zone | $0.50 |
+| Health Checks (3x) | $2.25 |
+| DNS Queries | ~$0.60/1M |
+| API Gateway (3 regions) | ~$1-3 |
+| Lambda (3 regions) | ~$0-3 |
+| ACM Certs | Free |
+| **Total** | **~$12-20/mo** |
 
-vs v1: ~$40/mo (Lambda health checker + API GW + EventBridge + CF Function invocations)
+## Project Structure
 
-## Implementation Plan
-
-1. Create Lambda origins in 3 regions (simple "hello from {region}" + `/health`)
-2. Create Route 53 hosted zone (or use existing)
-3. Create 3 health checks (one per origin)
-4. Create 3 latency-based alias/CNAME records pointing to origins
-5. Test client page — shows which origin responds based on location
-6. Simulate failure — disable one origin, verify automatic failover
-7. IaC: Terraform or CDK for repeatable deployment
+```
+geo-routing-dns/
+├── ARCHITECTURE.md          # This file
+├── failover.sh              # Demo script (inject/revert failures)
+├── test-client.html         # Interactive browser demo
+├── lambda/
+│   ├── origin.py            # Origin Lambda (simple response + /health)
+│   └── status.py            # R53 health status API
+└── terraform/
+    ├── main.tf              # Providers, variables
+    ├── lambdas.tf           # Lambda functions (3 regions)
+    ├── api_gateways.tf      # HTTP API Gateways (3 regions)
+    ├── route53.tf           # Zone, health checks, latency records
+    └── outputs.tf           # Terraform outputs
+```
 
 ## Prerequisites
 
-- A domain name (or use Route 53 subdomain for testing)
-- Lambda deployed in 3 regions (cross-region CDK or Terraform)
+- Domain with Route 53 hosted zone (or delegated subdomain)
+- ACM certificates in each region for the custom domain
+- NS delegation from parent zone to the subdomain's R53 nameservers
 
 ---
 
-*Review this architecture and let me know if you'd like to proceed with implementation.*
+*Zero custom routing code. DNS does the work. CloudFront adds WAF + DDoS.*
