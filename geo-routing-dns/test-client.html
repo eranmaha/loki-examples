@@ -35,6 +35,13 @@
         .architecture pre { color: #8B98A5; font-size: 0.8rem; white-space: pre; overflow-x: auto; }
         .routed { border-color: #3FB950 !important; box-shadow: 0 0 12px rgba(63,185,80,0.3); }
         .poll-status { text-align: center; margin: 10px 0; color: #8B98A5; font-size: 0.9rem; }
+        .r53-status { background: #161B22; border: 1px solid #30363D; border-radius: 12px; padding: 16px; margin-bottom: 20px; }
+        .r53-status h3 { color: #FF9900; margin-bottom: 10px; font-size: 1rem; }
+        .r53-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #21262D; }
+        .r53-row .label { color: #E8E8E8; }
+        .r53-row .val { font-weight: 600; }
+        .r53-row .val.up { color: #3FB950; }
+        .r53-row .val.down { color: #F85149; }
     </style>
 </head>
 <body>
@@ -76,6 +83,13 @@
 
         <div class="poll-status" id="pollStatus">Click "Test All Origins" to measure latency</div>
 
+        <div class="r53-status" id="r53Status">
+            <h3>🛡️ Route 53 Health Check Status (live from AWS)</h3>
+            <div class="r53-row"><span class="label">🇺🇸 Americas (us-east-1)</span><span class="val" id="r53-americas">Loading...</span></div>
+            <div class="r53-row"><span class="label">🇪🇺 EMEA (eu-west-1)</span><span class="val" id="r53-emea">Loading...</span></div>
+            <div class="r53-row"><span class="label">🇸🇬 APAC (ap-southeast-1)</span><span class="val" id="r53-apac">Loading...</span></div>
+        </div>
+
         <div class="controls">
             <button class="btn" onclick="testAllOrigins()">🚀 Test All Origins</button>
             <button class="btn" onclick="continuousTest()" id="continuousBtn">🔄 Continuous Test (5s)</button>
@@ -93,7 +107,33 @@
             apac:     { url: 'https://q2kqzrn8zc.execute-api.ap-southeast-1.amazonaws.com/', region: 'ap-southeast-1', label: 'APAC' },
         };
 
+        const STATUS_API = 'https://h1spol3qpl.execute-api.us-east-1.amazonaws.com/status';
         let intervalId = null;
+        let r53Health = { americas: true, emea: true, apac: true };
+
+        async function fetchR53Status() {
+            try {
+                const res = await fetch(STATUS_API);
+                const data = await res.json();
+                for (const [name, info] of Object.entries(data)) {
+                    r53Health[name] = info.healthy;
+                    const el = document.getElementById(`r53-${name}`);
+                    if (info.healthy) {
+                        el.textContent = `✅ HEALTHY (${info.healthyCheckers}/${info.totalCheckers} checkers)`;
+                        el.className = 'val up';
+                    } else {
+                        el.textContent = `❌ UNHEALTHY (${info.healthyCheckers}/${info.totalCheckers} checkers)`;
+                        el.className = 'val down';
+                    }
+                }
+            } catch (e) {
+                console.error('R53 status fetch failed:', e);
+            }
+        }
+
+        // Poll R53 status every 10s
+        fetchR53Status();
+        setInterval(fetchR53Status, 10000);
 
         async function testOrigin(name) {
             const origin = ORIGINS[name];
@@ -128,15 +168,18 @@
                 Object.keys(ORIGINS).map(name => testOrigin(name))
             );
 
-            // Highlight lowest latency
-            const valid = results.filter(r => r !== null);
+            // Highlight lowest latency among R53-healthy origins
+            const valid = results.filter(r => r !== null && r53Health[r.name]);
+            const allValid = results.filter(r => r !== null);
             if (valid.length > 0) {
                 valid.sort((a, b) => a.elapsed - b.elapsed);
                 const winner = valid[0];
                 document.getElementById(`card-${winner.name}`).classList.add('routed');
                 document.getElementById('pollStatus').textContent = 
-                    `✨ Route 53 would route you to: ${ORIGINS[winner.name].label} (${winner.elapsed}ms)`;
-                logEntry(`🏆 Winner: ${ORIGINS[winner.name].label} — ${winner.elapsed}ms (lowest latency)`, 'info');
+                    `✨ Route 53 routes you to: ${ORIGINS[winner.name].label} (${winner.elapsed}ms) — ${allValid.length - valid.length} origin(s) excluded by health check`;
+                logEntry(`🏆 Winner: ${ORIGINS[winner.name].label} — ${winner.elapsed}ms (lowest latency among healthy origins)`, 'info');
+            } else if (allValid.length > 0) {
+                document.getElementById('pollStatus').textContent = '⚠️ All origins marked unhealthy by Route 53!';
             }
         }
 
