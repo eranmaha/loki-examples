@@ -24,7 +24,7 @@
 #   5. (wait ~30s, observe R53 recovery)
 # ═══════════════════════════════════════════════════════════════
 
-set -euo pipefail
+set -eo pipefail
 
 ACTION="${1:-help}"
 REGION="${2:-}"
