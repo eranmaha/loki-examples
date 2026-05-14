@@ -103,6 +103,62 @@ Production-grade geo-routing using **Route 53 latency-based DNS**, **CloudFront 
 # Wait ~30s for R53 to detect recovery
 ```
 
+## Test Client — Page Sections Explained
+
+**URL:** `https://dtt5rtdxrg7b6.cloudfront.net/geo-routing.html`
+
+The test page is divided into the following sections:
+
+### 1. Architecture Diagram
+Visual representation of the traffic flow: Client → CloudFront → Route 53 → Regional origins.
+
+### 2. Origin Cards (Americas / EMEA / APAC)
+Shows the status and latency for each regional origin when tested directly.
+- **Status badge:** HEALTHY (green) or UNREACHABLE (red) — based on direct HTTP response
+- **Latency:** Round-trip time in ms from your browser to that origin's API GW endpoint
+- **Green glow border:** Indicates the "winner" (lowest latency among healthy origins)
+
+### 3. Route 53 Health Check Status (live from AWS)
+Real-time status from Route 53's global health checkers — **this is NOT your browser testing the origins**.
+
+**Flow:**
+```
+Test Page → Status API Lambda (us-east-1) → Route 53 GetHealthCheckStatus API
+                                                      ↓
+                                          Returns checker results from
+                                          16 global R53 health check locations
+                                          that ping each origin every 10s
+```
+
+- Shows how many of R53's 16 global checkers report each origin as healthy
+- This is what Route 53 **actually uses to make routing decisions**
+- When you inject a failure, this section shows the origin flipping to ❌ UNHEALTHY
+- Once unhealthy, R53 stops including that origin in DNS responses
+
+### 4. Control Buttons
+
+| Button | What it tests | Flow |
+|--------|---------------|------|
+| 🚀 Test All Origins (Direct) | Browser → each API GW directly | Measures raw latency, bypasses CloudFront and R53 |
+| ☁️ Test via CloudFront | Browser → CloudFront → R53 → origin | Full production path (WAF + DDoS + latency routing) |
+| 🌐 Test via R53 DNS | Browser → `api.geo.emhadip.people.aws.dev` → origin | R53 latency routing without CloudFront layer |
+| 🔄 Continuous (5s) | Repeats CloudFront test every 5s | **Use this during failure injection demo** — shows failover in real-time |
+| ⏹ Stop | Stops continuous testing | — |
+
+### 5. Event Log
+Chronological log of all test results with timestamps, showing which origin responded and how fast.
+
+### Demo Walkthrough (for customers)
+
+1. Open test page, point out the R53 Health Check section — all 3 origins green ✅
+2. Click **🔄 Continuous** — log shows `☁️ CF → eu-west-1 (EMEA)` repeating (closest to Israel)
+3. In terminal: `./failover.sh inject emea` — explain you're making EMEA return 503 on /health
+4. Watch the R53 Health Check section — within ~30s EMEA flips to ❌ (0/16 checkers)
+5. Watch the log — traffic automatically shifts to `☁️ CF → us-east-1 (Americas)` 
+6. **Key point:** Zero code change, zero manual intervention — DNS handled it
+7. In terminal: `./failover.sh revert emea` — EMEA recovers in ~30s
+8. Log shows traffic returning to EMEA (lowest latency from Israel)
+
 ## Comparison: v1 (CloudFront KVS) vs v2 (Route 53 + CloudFront)
 
 | Aspect | v1 (CF Function + KVS) | v2 (R53 + CF) |
