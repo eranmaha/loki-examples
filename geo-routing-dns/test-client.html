@@ -191,8 +191,8 @@
 
         function continuousTest() {
             if (intervalId) return;
-            intervalId = setInterval(testAllOrigins, 5000);
-            testAllOrigins();
+            intervalId = setInterval(testCloudFrontContinuous, 5000);
+            testCloudFrontContinuous();
             document.getElementById('continuousBtn').disabled = true;
             document.getElementById('stopBtn').disabled = false;
         }
@@ -231,6 +231,27 @@
             } catch (err) {
                 logEntry(`❌ R53 Direct: FAILED — ${err.message}`, 'fail');
             }
+        }
+
+        async function testCloudFrontContinuous() {
+            const start = performance.now();
+            try {
+                const res = await fetch(CLOUDFRONT_URL + '?t=' + Date.now());
+                const elapsed = Math.round(performance.now() - start);
+                const data = await res.json();
+                const healthy = data.healthy !== false;
+                logEntry(`☁️ CF → ${data.region} (${data.label}): ${elapsed}ms ${healthy ? '✅' : '❌ UNHEALTHY'}`, healthy ? 'success' : 'fail');
+                document.getElementById('pollStatus').textContent = `☁️ CloudFront → ${data.label} (${elapsed}ms) — WAF + Shield active`;
+                
+                // Highlight which origin CF picked
+                document.querySelectorAll('.origin-card').forEach(c => c.classList.remove('routed'));
+                const regionMap = {'us-east-1': 'americas', 'eu-west-1': 'emea', 'ap-southeast-1': 'apac'};
+                const cardName = regionMap[data.region];
+                if (cardName) document.getElementById(`card-${cardName}`).classList.add('routed');
+            } catch (err) {
+                logEntry(`❌ CloudFront: FAILED — ${err.message}`, 'fail');
+            }
+            fetchR53Status();
         }
 
         function updateCard(name, status, latency, healthy) {
