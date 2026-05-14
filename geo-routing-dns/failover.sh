@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════
 # Geo Routing DNS — Failure Injection / Recovery Script
 #
@@ -28,48 +28,58 @@ set -eo pipefail
 
 ACTION="${1:-help}"
 REGION="${2:-}"
-AWS_PROFILE_ARG=""
+PROFILE_FLAG=""
 
-# Parse --profile flag (can be 2nd or 3rd argument)
-for i in "$@"; do
-  if [[ "$i" == "--profile" ]]; then
-    shift_next=true
-  elif [[ "${shift_next:-}" == "true" ]]; then
-    AWS_PROFILE_ARG="--profile $i"
-    export AWS_PROFILE="$i"
-    shift_next=false
-  fi
+# Parse --profile flag
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --profile)
+      PROFILE_FLAG="--profile $2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
 done
 
-# If REGION is --profile, it means no region was given (for status command)
+# If REGION was --profile, clear it
 if [[ "$REGION" == "--profile" ]]; then
   REGION=""
 fi
 
-# Map region names to AWS regions and function names
-declare -A AWS_REGIONS=(
-  [americas]="us-east-1"
-  [emea]="eu-west-1"
-  [apac]="ap-southeast-1"
-)
+# Helper: get AWS region for origin name
+get_aws_region() {
+  case "$1" in
+    americas) echo "us-east-1" ;;
+    emea) echo "eu-west-1" ;;
+    apac) echo "ap-southeast-1" ;;
+    *) echo "" ;;
+  esac
+}
 
-declare -A FUNCTION_NAMES=(
-  [americas]="geo-routing-dns-origin-americas"
-  [emea]="geo-routing-dns-origin-emea"
-  [apac]="geo-routing-dns-origin-apac"
-)
+# Helper: get Lambda function name
+get_function_name() {
+  echo "geo-routing-dns-origin-$1"
+}
 
-declare -A HEALTH_CHECKS=(
-  [americas]="591d4d0d-044d-45d9-acd1-9ea6f73b0bad"
-  [emea]="240f864c-4c0e-4386-b245-f47dbb4ff5e4"
-  [apac]="ab055823-7ae9-4c5b-950f-1264914cbc4e"
-)
+# Helper: get health check ID
+get_health_check_id() {
+  case "$1" in
+    americas) echo "591d4d0d-044d-45d9-acd1-9ea6f73b0bad" ;;
+    emea) echo "240f864c-4c0e-4386-b245-f47dbb4ff5e4" ;;
+    apac) echo "ab055823-7ae9-4c5b-950f-1264914cbc4e" ;;
+  esac
+}
 
-declare -A LABELS=(
-  [americas]="Americas (us-east-1)"
-  [emea]="EMEA (eu-west-1)"
-  [apac]="APAC (ap-southeast-1)"
-)
+# Helper: get label
+get_label() {
+  case "$1" in
+    americas) echo "Americas (us-east-1)" ;;
+    emea) echo "EMEA (eu-west-1)" ;;
+    apac) echo "APAC (ap-southeast-1)" ;;
+  esac
+}
 
 HEALTHY_CODE='import json, os
 REGION = os.environ.get("AWS_REGION", "unknown")
@@ -95,20 +105,20 @@ def handler(event, context):
 
 inject_error() {
   local region_name="$1"
-  local aws_region="${AWS_REGIONS[$region_name]}"
-  local fn_name="${FUNCTION_NAMES[$region_name]}"
-  local label="${LABELS[$region_name]}"
+  local aws_region=$(get_aws_region "$region_name")
+  local fn_name=$(get_function_name "$region_name")
+  local label=$(get_label "$region_name")
 
   echo "🔴 Injecting failure into ${label}..."
-  
+
   local tmpdir=$(mktemp -d)
   echo "$UNHEALTHY_CODE" > "$tmpdir/origin.py"
   (cd "$tmpdir" && zip -q origin.zip origin.py)
 
-  aws $AWS_PROFILE_ARG lambda update-function-code --function-name "$fn_name" --region "$aws_region" \
+  aws $PROFILE_FLAG lambda update-function-code --function-name "$fn_name" --region "$aws_region" \
     --zip-file "fileb://$tmpdir/origin.zip" --query 'LastModified' --output text > /dev/null
 
-  aws $AWS_PROFILE_ARG lambda update-function-configuration --function-name "$fn_name" --region "$aws_region" \
+  aws $PROFILE_FLAG lambda update-function-configuration --function-name "$fn_name" --region "$aws_region" \
     --handler origin.handler --query 'Handler' --output text > /dev/null
 
   rm -rf "$tmpdir"
@@ -119,9 +129,9 @@ inject_error() {
 
 revert_error() {
   local region_name="$1"
-  local aws_region="${AWS_REGIONS[$region_name]}"
-  local fn_name="${FUNCTION_NAMES[$region_name]}"
-  local label="${LABELS[$region_name]}"
+  local aws_region=$(get_aws_region "$region_name")
+  local fn_name=$(get_function_name "$region_name")
+  local label=$(get_label "$region_name")
 
   echo "🟢 Reverting ${label} to healthy..."
 
@@ -129,10 +139,10 @@ revert_error() {
   echo "$HEALTHY_CODE" > "$tmpdir/origin.py"
   (cd "$tmpdir" && zip -q origin.zip origin.py)
 
-  aws $AWS_PROFILE_ARG lambda update-function-code --function-name "$fn_name" --region "$aws_region" \
+  aws $PROFILE_FLAG lambda update-function-code --function-name "$fn_name" --region "$aws_region" \
     --zip-file "fileb://$tmpdir/origin.zip" --query 'LastModified' --output text > /dev/null
 
-  aws $AWS_PROFILE_ARG lambda update-function-configuration --function-name "$fn_name" --region "$aws_region" \
+  aws $PROFILE_FLAG lambda update-function-configuration --function-name "$fn_name" --region "$aws_region" \
     --handler origin.handler --query 'Handler' --output text > /dev/null
 
   rm -rf "$tmpdir"
@@ -146,11 +156,11 @@ show_status() {
   echo "  Route 53 Health Check Status"
   echo "═══════════════════════════════════════════"
   for region_name in americas emea apac; do
-    local hc_id="${HEALTH_CHECKS[$region_name]}"
-    local label="${LABELS[$region_name]}"
-    local status=$(aws $AWS_PROFILE_ARG route53 get-health-check-status --health-check-id "$hc_id" \
+    local hc_id=$(get_health_check_id "$region_name")
+    local label=$(get_label "$region_name")
+    local status=$(aws $PROFILE_FLAG route53 get-health-check-status --health-check-id "$hc_id" \
       --query 'HealthCheckObservations[0].StatusReport.Status' --output text 2>/dev/null)
-    
+
     if echo "$status" | grep -q "Success"; then
       echo "  ✅ ${label}: HEALTHY"
     else
@@ -162,8 +172,8 @@ show_status() {
 
 case "$ACTION" in
   inject)
-    if [[ -z "$REGION" || ! "${AWS_REGIONS[$REGION]+x}" ]]; then
-      echo "Usage: $0 inject <americas|emea|apac>"
+    if [[ -z "$REGION" ]] || [[ -z "$(get_aws_region "$REGION")" ]]; then
+      echo "Usage: $0 inject <americas|emea|apac> [--profile <profile>]"
       exit 1
     fi
     inject_error "$REGION"
@@ -172,8 +182,8 @@ case "$ACTION" in
     show_status
     ;;
   revert)
-    if [[ -z "$REGION" || ! "${AWS_REGIONS[$REGION]+x}" ]]; then
-      echo "Usage: $0 revert <americas|emea|apac>"
+    if [[ -z "$REGION" ]] || [[ -z "$(get_aws_region "$REGION")" ]]; then
+      echo "Usage: $0 revert <americas|emea|apac> [--profile <profile>]"
       exit 1
     fi
     revert_error "$REGION"
