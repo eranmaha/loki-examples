@@ -55,7 +55,7 @@ async function queryDb() {
   
   // Get latest 10 events
   const result = await client.query(
-    `SELECT * FROM app_events ORDER BY created_at DESC LIMIT 10`
+    `SELECT * FROM app_events_nonexistent ORDER BY created_at DESC LIMIT 10`
   );
   
   await client.end();
