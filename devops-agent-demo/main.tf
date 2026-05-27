@@ -32,8 +32,10 @@ variable "devops_agent_webhook_url" {
   default = "https://event-ai.us-east-1.api.aws/webhook/generic/b4388eea-45d7-49ba-a107-79a5fbf04c9a"
 }
 
-variable "webhook_secret_arn" {
-  default = "arn:aws:secretsmanager:us-east-1:033216807884:secret:devops-agent-demo/webhook-secret-jvQ9Ky"
+variable "webhook_secret" {
+  description = "The webhook secret key used to sign requests to the DevOps Agent"
+  type        = string
+  sensitive   = true
 }
 
 variable "lambda_timeout" {
@@ -52,6 +54,18 @@ resource "aws_ssm_parameter" "sleep_seconds" {
   type  = "String"
   value = "0"
   tags  = { Project = var.project_name }
+}
+
+# ─── Secrets Manager (webhook secret) ───────────────────────────────────────
+
+resource "aws_secretsmanager_secret" "webhook_secret" {
+  name = "${var.project_name}/webhook-secret"
+  tags = { Project = var.project_name }
+}
+
+resource "aws_secretsmanager_secret_version" "webhook_secret" {
+  secret_id     = aws_secretsmanager_secret.webhook_secret.id
+  secret_string = var.webhook_secret
 }
 
 # ─── IAM Role for Lambda ────────────────────────────────────────────────────
@@ -241,7 +255,7 @@ resource "aws_cloudwatch_metric_alarm" "error_rate" {
   statistic           = "Sum"
   threshold           = 3
   alarm_description   = "Application error rate >= 3 errors in 1 minute"
-  treat_missing_data  = "notBreaching"
+  treat_missing_data  = "missing"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
   tags                = { Project = var.project_name }
@@ -302,7 +316,7 @@ resource "aws_iam_role_policy" "webhook_bridge_policy" {
       {
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
-        Resource = var.webhook_secret_arn
+        Resource = aws_secretsmanager_secret.webhook_secret.arn
       }
     ]
   })
@@ -328,7 +342,7 @@ resource "aws_lambda_function" "webhook_bridge" {
   environment {
     variables = {
       WEBHOOK_URL        = var.devops_agent_webhook_url
-      WEBHOOK_SECRET_ARN = var.webhook_secret_arn
+      WEBHOOK_SECRET_ARN = aws_secretsmanager_secret.webhook_secret.arn
       SERVICE_NAME       = var.project_name
     }
   }

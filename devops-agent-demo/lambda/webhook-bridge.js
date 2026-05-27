@@ -70,11 +70,13 @@ exports.handler = async (event) => {
 
     // Sign with HMAC
     const timestamp = new Date().toISOString();
+    const bodyString = JSON.stringify(payload);
     const hmac = createHmac("sha256", secret);
-    hmac.update(`${timestamp}:${JSON.stringify(payload)}`, "utf8");
+    hmac.update(`${timestamp}:${bodyString}`, "utf8");
     const signature = hmac.digest("base64");
 
     console.log(`Sending incident to DevOps Agent: ${title}`);
+    console.log(`DEBUG signing: timestamp=${timestamp}, secret_prefix=${secret.substring(0, 4)}..., secret_length=${secret.length}, payload_length=${bodyString.length}, signature_prefix=${signature.substring(0, 8)}...`);
 
     const response = await fetch(WEBHOOK_URL, {
       method: "POST",
