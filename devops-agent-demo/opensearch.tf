@@ -15,7 +15,7 @@ resource "aws_opensearchserverless_security_policy" "encryption" {
 resource "aws_opensearchserverless_vpc_endpoint" "aoss" {
   name               = "${var.project_name}-aoss"
   vpc_id             = aws_vpc.main.id
-  subnet_ids         = aws_subnet.private[*].id
+  subnet_ids         = local.aoss_supported_subnet_ids
   security_group_ids = [aws_security_group.vpc_endpoints.id]
 }
 

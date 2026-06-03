@@ -94,6 +94,14 @@ locals {
   }
 }
 
+locals {
+  # AOSS only supports us-east-1b, us-east-1c, us-east-1d — filter subnets
+  aoss_supported_subnet_ids = [
+    for s in aws_subnet.private : s.id
+    if contains(["us-east-1b", "us-east-1c", "us-east-1d"], s.availability_zone)
+  ]
+}
+
 resource "aws_vpc_endpoint" "interface" {
   for_each = local.interface_endpoints
 
@@ -101,7 +109,7 @@ resource "aws_vpc_endpoint" "interface" {
   service_name        = each.value
   vpc_endpoint_type   = "Interface"
   private_dns_enabled = true
-  subnet_ids          = aws_subnet.private[*].id
+  subnet_ids          = each.key == "aoss" ? local.aoss_supported_subnet_ids : aws_subnet.private[*].id
   security_group_ids  = [aws_security_group.vpc_endpoints.id]
 
   tags = {
