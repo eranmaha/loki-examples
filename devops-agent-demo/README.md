@@ -100,27 +100,39 @@ terraform apply -var="webhook_secret=YOUR_SECRET"
 After `terraform apply` completes, configure the DevOps Agent to connect to your MCP server:
 
 1. **Create a Private Connection** (console)
-   - Go to the DevOps Agent console → your space → Settings → Connections
+   - Go to the DevOps Agent console → Capability Providers → Private Connections
    - Create a new connection:
-     - Type: Private (VPC)
+     - Type: Service-managed
+     - Host address: value from `terraform output mcp_server_host_address` (e.g., `10.0.0.42:8080`)
+     - DNS resolution: In VPC (private DNS)
      - VPC: Select the VPC created by Terraform (`devops-agent-demo-vpc`)
      - Subnets: Select the private subnets
-     - Security Group: Select `devops-agent-demo-vpce-sg`
+     - Security Group: Select `devops-agent-demo-mcp-server` SG
 
 2. **Register the MCP Server** (console)
-   - Go to the DevOps Agent console → your space → Tools → MCP Servers
-   - Add a new MCP server:
+   - Go to the DevOps Agent console → Capability Providers → MCP Server → Register
+   - MCP server details:
      - Name: `opensearch-logs`
-     - URL: `http://<mcp_server_private_ip>:8080/mcp` (from Terraform output `mcp_server_host_address`)
-     - Transport: Streamable HTTP
-     - Connection: Select the private connection from step 1
+     - Endpoint URL: value from `terraform output mcp_server_url` (e.g., `http://10.0.0.42:8080/mcp`)
+     - ✅ Connect to endpoint using private connection → select the connection from step 1
+   - Authorization flow: **API Key**
+   - Authorization configuration:
+     - API key name: `x-api-key`
+     - Header name: `x-api-key`
+     - API key value: run `terraform output -raw mcp_server_api_key`
+   - Complete the registration
 
-3. **Upload Investigation Skills** (console)
+3. **Configure MCP Tools in Agent Space**
+   - Go to your Agent Space → Capabilities
+   - Enable the `opensearch-logs` MCP server
+   - Allowlist tools: `list_index`, `search_index`, `get_index_mapping`, `get_cluster_health`, `count`
+
+4. **Upload Investigation Skills** (console)
    - Go to the DevOps Agent console → your space → Skills
    - Upload `skills/investigate-app-failure.md` (infra errors)
    - Upload `skills/investigate-opensearch-app-errors.md` (applicative errors)
 
-4. **Configure Webhook** (console)
+5. **Configure Webhook** (console)
    - Go to the DevOps Agent console → your space → Integrations → Webhooks
    - Create a generic webhook (should already exist if using an existing space)
    - Copy the webhook URL + secret into your `terraform.tfvars` / env vars
@@ -228,6 +240,9 @@ Deploys the [opensearch-mcp-server-py](https://github.com/opensearch-project/ope
 | `opensearch_endpoint` | AOSS collection URL |
 | `mcp_server_private_ip` | MCP Server EC2 private IP |
 | `mcp_server_host_address` | MCP Server endpoint (ip:8080) |
+| `mcp_server_url` | Full MCP endpoint URL |
+| `mcp_server_api_key` | API key for MCP auth (sensitive) |
+| `mcp_server_api_key_secret_arn` | Secrets Manager ARN for API key |
 | `lambda_function_name` | App Lambda name |
 | `alarm_error_rate` | Error rate alarm name |
 | `alarm_timeout` | Timeout alarm name |
