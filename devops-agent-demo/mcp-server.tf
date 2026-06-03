@@ -96,6 +96,32 @@ resource "aws_security_group" "mcp_server" {
   }
 }
 
+# ─── MCP Server TLS Certificate ──────────────────────────────────────────────
+
+resource "tls_private_key" "mcp_server" {
+  count     = var.enable_mcp_server ? 1 : 0
+  algorithm = "RSA"
+  rsa_bits  = 2048
+}
+
+resource "tls_self_signed_cert" "mcp_server" {
+  count           = var.enable_mcp_server ? 1 : 0
+  private_key_pem = tls_private_key.mcp_server[0].private_key_pem
+
+  subject {
+    common_name  = "mcp-server"
+    organization = "devops-agent-demo"
+  }
+
+  validity_period_hours = 87600 # 10 years
+
+  allowed_uses = [
+    "key_encipherment",
+    "digital_signature",
+    "server_auth",
+  ]
+}
+
 # ─── MCP Server API Key ──────────────────────────────────────────────────────
 
 resource "random_password" "mcp_api_key" {
@@ -141,7 +167,7 @@ resource "aws_instance" "mcp_server" {
     set -ex
 
     # Install Python 3.12 + pip + nginx
-    dnf install -y python3.12 python3.12-pip nginx openssl
+    dnf install -y python3.12 python3.12-pip nginx
 
     # Install opensearch-mcp-server-py
     python3.12 -m pip install opensearch-mcp-server-py
@@ -149,12 +175,14 @@ resource "aws_instance" "mcp_server" {
     # Store the API key
     MCP_API_KEY="${random_password.mcp_api_key[0].result}"
 
-    # Generate self-signed TLS cert
+    # Generate self-signed TLS cert (from Terraform)
     mkdir -p /etc/nginx/ssl
-    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-      -keyout /etc/nginx/ssl/mcp.key \
-      -out /etc/nginx/ssl/mcp.crt \
-      -subj "/CN=mcp-server/O=devops-agent-demo"
+    cat > /etc/nginx/ssl/mcp.crt <<'CERT'
+    ${tls_self_signed_cert.mcp_server[0].cert_pem}
+    CERT
+    cat > /etc/nginx/ssl/mcp.key <<'KEY'
+    ${tls_private_key.mcp_server[0].private_key_pem}
+    KEY
 
     # Configure nginx as HTTPS API key auth proxy on port 8080 -> MCP on 8081
     cat > /etc/nginx/conf.d/mcp-proxy.conf <<NGINX
@@ -273,4 +301,9 @@ output "mcp_server_api_key" {
   value       = var.enable_mcp_server ? random_password.mcp_api_key[0].result : ""
   description = "MCP Server API key (use in DevOps Agent MCP registration)"
   sensitive   = true
+}
+
+output "mcp_server_tls_certificate" {
+  value       = var.enable_mcp_server ? tls_self_signed_cert.mcp_server[0].cert_pem : ""
+  description = "MCP Server TLS certificate (PEM) - paste into DevOps Agent private connection"
 }
