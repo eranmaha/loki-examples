@@ -113,7 +113,7 @@ After `terraform apply` completes, configure the DevOps Agent to connect to your
    - Go to the DevOps Agent console → Capability Providers → MCP Server → Register
    - MCP server details:
      - Name: `opensearch-logs`
-     - Endpoint URL: value from `terraform output mcp_server_url` (e.g., `http://10.0.0.42:8080/mcp`)
+     - Endpoint URL: value from `terraform output mcp_server_url` (e.g., `http://10.0.0.42:8080/mcp/`)
      - ✅ Connect to endpoint using private connection → select the connection from step 1
    - Authorization flow: **API Key**
    - Authorization configuration:
@@ -170,7 +170,7 @@ Deploys the [opensearch-mcp-server-py](https://github.com/opensearch-project/ope
 {
   "mcpServers": {
     "opensearch": {
-      "url": "http://<mcp_server_private_ip>:8080/mcp",
+      "url": "http://<mcp_server_private_ip>:8080/mcp/",
       "transport": "streamable-http"
     }
   }

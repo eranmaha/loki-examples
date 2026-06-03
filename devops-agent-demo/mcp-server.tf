@@ -369,7 +369,7 @@ output "mcp_server_host_address" {
 }
 
 output "mcp_server_url" {
-  value       = var.enable_mcp_server ? "http://${aws_network_interface.mcp_server[0].private_ip}:8080/mcp" : ""
+  value       = var.enable_mcp_server ? "http://${aws_network_interface.mcp_server[0].private_ip}:8080/mcp/" : ""
   description = "OpenSearch MCP Server full URL (for DevOps Agent MCP registration)"
 }
 
