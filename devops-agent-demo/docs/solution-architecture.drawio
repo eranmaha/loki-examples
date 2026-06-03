@@ -188,4 +188,93 @@
       </root>
     </mxGraphModel>
   </diagram>
+  <diagram name="MCP Server EC2 — Internal Components" id="mcp-ec2-drilldown">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="800" math="0" shadow="0" background="#0D1117">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Title -->
+        <mxCell id="d2-title" value="&lt;font style=&amp;quot;font-size: 20px;&amp;quot;&gt;MCP Server EC2 — Internal Components&lt;/font&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontColor=#FFFFFF;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="350" y="20" width="500" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- EC2 Instance boundary -->
+        <mxCell id="d2-ec2" value="&lt;b&gt;EC2 Instance&lt;/b&gt; (t4g.small, arm64, AL2023)&lt;br&gt;Private Subnet — 10.0.0.92" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=11;fontStyle=1;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_ec2_instance_contents;strokeColor=#ED7100;fillColor=#1C2128;verticalAlign=top;align=left;spacingLeft=30;fontColor=#ED7100;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="200" y="100" width="600" height="500" as="geometry" />
+        </mxCell>
+
+        <!-- Nginx -->
+        <mxCell id="d2-nginx" value="&lt;b&gt;nginx 1.30&lt;/b&gt;&lt;br&gt;&lt;br&gt;• HTTPS (TLS 1.2/1.3)&lt;br&gt;• Self-signed cert&lt;br&gt;• x-api-key validation&lt;br&gt;• Reverse proxy&lt;br&gt;&lt;br&gt;&lt;font color=&amp;quot;#3FB950&amp;quot;&gt;Port 8080 (SSL)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#21262D;strokeColor=#58A6FF;fontColor=#C9D1D9;fontSize=11;verticalAlign=middle;align=center;" vertex="1" parent="1">
+          <mxGeometry x="280" y="180" width="200" height="160" as="geometry" />
+        </mxCell>
+
+        <!-- MCP Server -->
+        <mxCell id="d2-mcp" value="&lt;b&gt;opensearch-mcp-server-py&lt;/b&gt;&lt;br&gt;(mcp_server_opensearch)&lt;br&gt;&lt;br&gt;• Streamable HTTP transport&lt;br&gt;• IAM/SigV4 auth to AOSS&lt;br&gt;• Tools: list_index, search_index,&lt;br&gt;  get_index_mapping, count,&lt;br&gt;  get_cluster_health&lt;br&gt;&lt;br&gt;&lt;font color=&amp;quot;#3FB950&amp;quot;&gt;Port 8081 (localhost)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#21262D;strokeColor=#FF9900;fontColor=#C9D1D9;fontSize=11;verticalAlign=middle;align=center;" vertex="1" parent="1">
+          <mxGeometry x="280" y="400" width="200" height="180" as="geometry" />
+        </mxCell>
+
+        <!-- systemd -->
+        <mxCell id="d2-systemd" value="&lt;b&gt;systemd&lt;/b&gt;&lt;br&gt;• mcp-server.service&lt;br&gt;• nginx.service&lt;br&gt;(auto-restart)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#21262D;strokeColor=#484F58;fontColor=#8B949E;fontSize=10;verticalAlign=middle;align=center;" vertex="1" parent="1">
+          <mxGeometry x="560" y="300" width="160" height="90" as="geometry" />
+        </mxCell>
+
+        <!-- IAM Role -->
+        <mxCell id="d2-iam" value="&lt;b&gt;IAM Instance Profile&lt;/b&gt;&lt;br&gt;&lt;br&gt;• AOSS read/write&lt;br&gt;• S3 GetObject (pkg)&lt;br&gt;• SSM managed instance" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#21262D;strokeColor=#DA3633;fontColor=#C9D1D9;fontSize=10;verticalAlign=middle;align=center;" vertex="1" parent="1">
+          <mxGeometry x="560" y="430" width="160" height="110" as="geometry" />
+        </mxCell>
+
+        <!-- Nginx → MCP connection -->
+        <mxCell id="d2-e1" value="&lt;font color=&amp;quot;#58A6FF&amp;quot;&gt;proxy_pass&lt;br&gt;http://127.0.0.1:8081&lt;/font&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=0.5;exitY=1;entryX=0.5;entryY=0;strokeColor=#58A6FF;fontColor=#58A6FF;fontSize=9;strokeWidth=2;" edge="1" source="d2-nginx" target="d2-mcp" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- DevOps Agent (incoming) -->
+        <mxCell id="d2-agent" value="&lt;b&gt;AWS DevOps Agent&lt;/b&gt;&lt;br&gt;(via VPC Lattice&lt;br&gt;Private Connection)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FF9900;strokeColor=none;fontColor=#232F3E;fontSize=11;fontStyle=1;verticalAlign=middle;align=center;" vertex="1" parent="1">
+          <mxGeometry x="30" y="210" width="160" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- Agent → Nginx -->
+        <mxCell id="d2-e2" value="&lt;font color=&amp;quot;#FF9900&amp;quot;&gt;HTTPS :8080&lt;br&gt;x-api-key header&lt;/font&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;entryX=0;entryY=0.5;strokeColor=#FF9900;fontColor=#FF9900;fontSize=9;strokeWidth=2;dashed=1;" edge="1" source="d2-agent" target="d2-nginx" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- OpenSearch Serverless -->
+        <mxCell id="d2-aoss" value="&lt;b&gt;OpenSearch Serverless&lt;/b&gt;&lt;br&gt;(AOSS TIMESERIES)&lt;br&gt;&lt;br&gt;• app-transactions&lt;br&gt;• app-errors" style="outlineConnect=0;fontColor=#FFFFFF;gradientColor=none;fillColor=#8C4FFF;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.opensearch_service;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="460" width="60" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- MCP → AOSS via VPC Endpoint -->
+        <mxCell id="d2-e3" value="&lt;font color=&amp;quot;#8C4FFF&amp;quot;&gt;AOSS VPC Endpoint&lt;br&gt;(IAM/SigV4)&lt;/font&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;entryX=0;entryY=0.5;strokeColor=#8C4FFF;fontColor=#8C4FFF;fontSize=9;strokeWidth=2;" edge="1" source="d2-mcp" target="d2-aoss" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- VPC Endpoint box -->
+        <mxCell id="d2-vpce" value="&lt;b&gt;VPC Endpoint&lt;/b&gt;&lt;br&gt;(AOSS Interface)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1C2128;strokeColor=#8C4FFF;fontColor=#8C4FFF;fontSize=10;verticalAlign=middle;align=center;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="850" y="470" width="120" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Resource Gateway ENI -->
+        <mxCell id="d2-rg" value="&lt;b&gt;Resource Gateway ENI&lt;/b&gt;&lt;br&gt;(VPC Lattice managed)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1C2128;strokeColor=#FF9900;fontColor=#FF9900;fontSize=10;verticalAlign=middle;align=center;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="30" y="370" width="160" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Legend -->
+        <mxCell id="d2-legend" value="&lt;b&gt;Auth Flow:&lt;/b&gt;&lt;br&gt;1. DevOps Agent → VPC Lattice Resource Gateway&lt;br&gt;2. ENI → nginx :8080 (TLS + x-api-key)&lt;br&gt;3. nginx validates API key → proxy to :8081&lt;br&gt;4. MCP server → AOSS via VPC Endpoint (IAM)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#161B22;strokeColor=#30363D;fontColor=#C9D1D9;fontSize=10;align=left;verticalAlign=top;spacingLeft=10;spacingTop=5;" vertex="1" parent="1">
+          <mxGeometry x="830" y="100" width="320" height="100" as="geometry" />
+        </mxCell>
+
+        <!-- S3 bucket for package -->
+        <mxCell id="d2-s3" value="&lt;b&gt;S3 (Assets)&lt;/b&gt;&lt;br&gt;mcp-server-pkg.zip" style="outlineConnect=0;fontColor=#FFFFFF;gradientColor=none;fillColor=#3F8624;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="280" width="50" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- S3 endpoint note -->
+        <mxCell id="d2-e4" value="&lt;font color=&amp;quot;#3F8624&amp;quot;&gt;S3 Gateway Endpoint&lt;br&gt;(boot-time download)&lt;/font&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0;entryX=0;entryY=0.5;strokeColor=#3F8624;fontColor=#3F8624;fontSize=9;dashed=1;" edge="1" source="d2-ec2" target="d2-s3" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
 </mxfile>
