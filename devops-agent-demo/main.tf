@@ -20,6 +20,16 @@ variable "project_name" {
   default = "devops-agent-demo"
 }
 
+variable "account_id" {
+  description = "AWS account ID for deployment"
+  default     = "033216807884"
+}
+
+variable "devops_agent_space_id" {
+  description = "DevOps Agent space ID"
+  default     = "e8246657-9b81-4f09-8dd9-7d9d97142afa"
+}
+
 variable "dsql_cluster_endpoint" {
   default = "zntxnmjv6gxlrwznxhbmxrboza.dsql.us-east-1.on.aws"
 }
@@ -56,6 +66,20 @@ resource "aws_ssm_parameter" "sleep_seconds" {
   tags  = { Project = var.project_name }
 }
 
+resource "aws_ssm_parameter" "data_corruption" {
+  name  = "/${var.project_name}/data-corruption"
+  type  = "String"
+  value = "false"
+  tags  = { Project = var.project_name }
+}
+
+resource "aws_ssm_parameter" "business_logic_error" {
+  name  = "/${var.project_name}/business-logic-error"
+  type  = "String"
+  value = "false"
+  tags  = { Project = var.project_name }
+}
+
 # ─── Secrets Manager (webhook secret) ───────────────────────────────────────
 
 resource "aws_secretsmanager_secret" "webhook_secret" {
@@ -66,6 +90,10 @@ resource "aws_secretsmanager_secret" "webhook_secret" {
 resource "aws_secretsmanager_secret_version" "webhook_secret" {
   secret_id     = aws_secretsmanager_secret.webhook_secret.id
   secret_string = var.webhook_secret
+
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
 }
 
 # ─── IAM Role for Lambda ────────────────────────────────────────────────────
@@ -95,15 +123,33 @@ resource "aws_iam_role_policy" "lambda_base" {
         Resource = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:*"
       },
       {
+        Effect = "Allow"
+        Action = ["ssm:GetParameter", "ssm:PutParameter"]
+        Resource = [
+          aws_ssm_parameter.sleep_seconds.arn,
+          aws_ssm_parameter.data_corruption.arn,
+          aws_ssm_parameter.business_logic_error.arn,
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:CreateNetworkInterface",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DeleteNetworkInterface"
+        ]
+        Resource = "*"
+      },
+      {
         Effect   = "Allow"
-        Action   = ["ssm:GetParameter", "ssm:PutParameter"]
-        Resource = aws_ssm_parameter.sleep_seconds.arn
+        Action   = ["aoss:APIAccessAll"]
+        Resource = "arn:aws:aoss:${var.region}:${var.account_id}:collection/*"
       }
     ]
   })
 }
 
-# DSQL access policy - separate so we can detach it for error injection
+# DSQL access policy
 resource "aws_iam_role_policy" "lambda_dsql" {
   name = "dsql-access"
   role = aws_iam_role.lambda_role.id
@@ -136,12 +182,20 @@ resource "aws_lambda_function" "app" {
   filename         = data.archive_file.lambda_zip.output_path
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
 
+  vpc_config {
+    subnet_ids         = aws_subnet.private[*].id
+    security_group_ids = [aws_security_group.lambda.id]
+  }
+
   environment {
     variables = {
-      DSQL_ENDPOINT    = var.dsql_cluster_endpoint
-      DSQL_REGION      = var.region
-      SSM_SLEEP_PARAM  = aws_ssm_parameter.sleep_seconds.name
-      PROJECT_NAME     = var.project_name
+      DSQL_ENDPOINT             = var.dsql_cluster_endpoint
+      DSQL_REGION               = var.region
+      SSM_SLEEP_PARAM           = aws_ssm_parameter.sleep_seconds.name
+      SSM_DATA_CORRUPTION_PARAM = aws_ssm_parameter.data_corruption.name
+      SSM_BIZ_ERROR_PARAM       = aws_ssm_parameter.business_logic_error.name
+      PROJECT_NAME              = var.project_name
+      OPENSEARCH_ENDPOINT       = aws_opensearchserverless_collection.logs.collection_endpoint
     }
   }
 
@@ -206,12 +260,12 @@ resource "aws_cloudfront_distribution" "app" {
   }
 
   default_cache_behavior {
-    target_origin_id       = "api"
-    viewer_protocol_policy = "redirect-to-https"
-    allowed_methods        = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
-    cached_methods         = ["GET", "HEAD"]
-    cache_policy_id        = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
-    origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AllViewerExceptHostHeader
+    target_origin_id         = "api"
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods           = ["GET", "HEAD"]
+    cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
+    origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac"
   }
 
   restrictions {
@@ -269,7 +323,7 @@ resource "aws_cloudwatch_metric_alarm" "timeout_rate" {
   namespace           = "AWS/Lambda"
   period              = 60
   statistic           = "Maximum"
-  threshold           = (var.lambda_timeout - 1) * 1000  # near-timeout in ms
+  threshold           = (var.lambda_timeout - 1) * 1000
   alarm_description   = "Lambda near-timeout detected (duration >= ${var.lambda_timeout - 1}s)"
   treat_missing_data  = "notBreaching"
   dimensions = {
@@ -287,7 +341,7 @@ resource "aws_sns_topic" "alerts" {
   tags = { Project = var.project_name }
 }
 
-# ─── Webhook Bridge Lambda (SNS → HMAC-signed webhook to Frontier DevOps Agent)
+# ─── Webhook Bridge Lambda ──────────────────────────────────────────────────
 
 resource "aws_iam_role" "webhook_bridge_role" {
   name = "${var.project_name}-webhook-bridge-role"
@@ -385,8 +439,8 @@ resource "aws_iam_role_policy" "injector_policy" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect = "Allow"
-        Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:*"
       },
       {
@@ -395,9 +449,22 @@ resource "aws_iam_role_policy" "injector_policy" {
         Resource = aws_iam_role.lambda_role.arn
       },
       {
-        Effect   = "Allow"
-        Action   = ["ssm:PutParameter", "ssm:GetParameter"]
-        Resource = aws_ssm_parameter.sleep_seconds.arn
+        Effect = "Allow"
+        Action = ["ssm:PutParameter", "ssm:GetParameter"]
+        Resource = [
+          aws_ssm_parameter.sleep_seconds.arn,
+          aws_ssm_parameter.data_corruption.arn,
+          aws_ssm_parameter.business_logic_error.arn,
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:CreateNetworkInterface",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DeleteNetworkInterface"
+        ]
+        Resource = "*"
       }
     ]
   })
@@ -420,11 +487,18 @@ resource "aws_lambda_function" "injector" {
   filename         = data.archive_file.injector_zip.output_path
   source_code_hash = data.archive_file.injector_zip.output_base64sha256
 
+  vpc_config {
+    subnet_ids         = aws_subnet.private[*].id
+    security_group_ids = [aws_security_group.lambda.id]
+  }
+
   environment {
     variables = {
-      APP_ROLE_NAME   = aws_iam_role.lambda_role.name
-      SSM_SLEEP_PARAM = aws_ssm_parameter.sleep_seconds.name
-      DSQL_POLICY_NAME = "dsql-access"
+      APP_ROLE_NAME             = aws_iam_role.lambda_role.name
+      SSM_SLEEP_PARAM           = aws_ssm_parameter.sleep_seconds.name
+      SSM_DATA_CORRUPTION_PARAM = aws_ssm_parameter.data_corruption.name
+      SSM_BIZ_ERROR_PARAM       = aws_ssm_parameter.business_logic_error.name
+      DSQL_POLICY_NAME          = "dsql-access"
     }
   }
 

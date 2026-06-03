@@ -1,29 +1,95 @@
 const { DsqlSigner } = require("@aws-sdk/dsql-signer");
 const { SSMClient, GetParameterCommand } = require("@aws-sdk/client-ssm");
 const { Client } = require("pg");
+const { defaultProvider } = require("@aws-sdk/credential-provider-node");
+const { SignatureV4 } = require("@smithy/signature-v4");
+const { Sha256 } = require("@aws-crypto/sha256-js");
+const { HttpRequest } = require("@smithy/protocol-http");
 
 const ssm = new SSMClient({});
 const DSQL_ENDPOINT = process.env.DSQL_ENDPOINT;
 const DSQL_REGION = process.env.DSQL_REGION;
 const SSM_SLEEP_PARAM = process.env.SSM_SLEEP_PARAM;
+const SSM_DATA_CORRUPTION_PARAM = process.env.SSM_DATA_CORRUPTION_PARAM;
+const SSM_BIZ_ERROR_PARAM = process.env.SSM_BIZ_ERROR_PARAM;
+const OPENSEARCH_ENDPOINT = process.env.OPENSEARCH_ENDPOINT;
 
 async function getToken() {
   const signer = new DsqlSigner({ hostname: DSQL_ENDPOINT, region: DSQL_REGION });
   return await signer.getDbConnectAdminAuthToken();
 }
 
-async function getSleepSeconds() {
+async function getSsmParam(name) {
   try {
-    const result = await ssm.send(new GetParameterCommand({ Name: SSM_SLEEP_PARAM }));
-    return parseInt(result.Parameter.Value) || 0;
+    const result = await ssm.send(new GetParameterCommand({ Name: name }));
+    return result.Parameter.Value;
   } catch (e) {
-    return 0;
+    return "0";
   }
 }
 
 async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
+
+// ─── OpenSearch Serverless SigV4 request ────────────────────────────────────
+
+async function opensearchRequest(method, path, body) {
+  if (!OPENSEARCH_ENDPOINT) return;
+  try {
+    const url = new URL(path, OPENSEARCH_ENDPOINT);
+    const request = new HttpRequest({
+      method,
+      hostname: url.hostname,
+      path: url.pathname,
+      headers: {
+        host: url.hostname,
+        "content-type": "application/json",
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+
+    const signer = new SignatureV4({
+      service: "aoss",
+      region: DSQL_REGION,
+      credentials: defaultProvider(),
+      sha256: Sha256,
+    });
+
+    const signed = await signer.sign(request);
+    const https = require("https");
+    await new Promise((resolve, reject) => {
+      const req = https.request(
+        {
+          hostname: signed.hostname,
+          path: signed.path,
+          method: signed.method,
+          headers: signed.headers,
+        },
+        (res) => {
+          let data = "";
+          res.on("data", (chunk) => (data += chunk));
+          res.on("end", () => resolve(data));
+        }
+      );
+      req.on("error", reject);
+      if (signed.body) req.write(signed.body);
+      req.end();
+    });
+  } catch (e) {
+    console.warn("[OPENSEARCH] Write failed:", e.message);
+  }
+}
+
+async function logTransaction(doc) {
+  await opensearchRequest("POST", "/app-transactions/_doc", doc);
+}
+
+async function logAppError(doc) {
+  await opensearchRequest("POST", "/app-errors/_doc", doc);
+}
+
+// ─── Database ───────────────────────────────────────────────────────────────
 
 async function queryDb() {
   const token = await getToken();
@@ -33,11 +99,10 @@ async function queryDb() {
     user: "admin",
     password: token,
     database: "postgres",
-    ssl: { rejectUnauthorized: false }
+    ssl: { rejectUnauthorized: false },
   });
   await client.connect();
-  
-  // Ensure table exists
+
   await client.query(`
     CREATE TABLE IF NOT EXISTS app_events (
       id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
@@ -46,69 +111,128 @@ async function queryDb() {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
-  
-  // Insert a sample event
+
   await client.query(
     `INSERT INTO app_events (event_type, message) VALUES ($1, $2)`,
-    ['page_view', `View at ${new Date().toISOString()}`]
+    ["page_view", `View at ${new Date().toISOString()}`]
   );
-  
-  // Get latest 10 events
+
   const result = await client.query(
     `SELECT * FROM app_events ORDER BY created_at DESC LIMIT 10`
   );
-  
+
   await client.end();
   return result.rows;
 }
 
-exports.handler = async (event) => {
-  const path = event.rawPath || '/';
-  const method = event.requestContext?.http?.method || 'GET';
+// ─── Handler ────────────────────────────────────────────────────────────────
 
-  // Serve test page
-  if (path === '/test' || path === '/') {
+exports.handler = async (event) => {
+  const path = event.rawPath || "/";
+
+  if (path === "/test" || path === "/") {
     return {
       statusCode: 200,
-      headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache' },
-      body: getTestPageHtml()
+      headers: { "Content-Type": "text/html", "Cache-Control": "no-cache" },
+      body: getTestPageHtml(),
     };
   }
 
-  // Health check
-  if (path === '/health') {
-    return { statusCode: 200, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'ok' }) };
+  if (path === "/health") {
+    return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "ok" }) };
   }
 
-  // Data endpoint
-  if (path === '/data') {
+  if (path === "/data") {
+    const startTime = Date.now();
     try {
-      // Check for injected sleep
-      const sleepSec = await getSleepSeconds();
+      // Check injected faults
+      const [sleepVal, corruptionFlag, bizErrorFlag] = await Promise.all([
+        getSsmParam(SSM_SLEEP_PARAM),
+        getSsmParam(SSM_DATA_CORRUPTION_PARAM),
+        getSsmParam(SSM_BIZ_ERROR_PARAM),
+      ]);
+      const sleepSec = parseInt(sleepVal) || 0;
+
       if (sleepSec > 0) {
         console.log(`[INJECTED DELAY] Sleeping ${sleepSec}s...`);
         await sleep(sleepSec * 1000);
       }
 
+      // Business logic error injection
+      if (bizErrorFlag === "true") {
+        const errorDoc = {
+          "@timestamp": new Date().toISOString(),
+          error_type: "business_logic",
+          message: "Invalid state transition: order in SHIPPED state cannot move to PENDING",
+          severity: "ERROR",
+          context: { order_id: "ORD-" + Math.random().toString(36).slice(2, 8), from_state: "SHIPPED", to_state: "PENDING" },
+        };
+        await logAppError(errorDoc);
+        console.error(JSON.stringify({ metric: "AppError", error: errorDoc.message }));
+        return {
+          statusCode: 500,
+          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+          body: JSON.stringify({ success: false, error: errorDoc.message }),
+        };
+      }
+
       const rows = await queryDb();
+      const durationMs = Date.now() - startTime;
+
+      // Data corruption injection — write malformed data to OpenSearch
+      if (corruptionFlag === "true") {
+        const corruptDoc = {
+          "@timestamp": "not-a-date",
+          request_path: 12345, // should be string
+          status: "two-hundred", // should be number
+          duration_ms: "fast", // should be number
+          dsql_rows_returned: null,
+        };
+        await opensearchRequest("POST", "/app-transactions/_doc", corruptDoc);
+        const errorDoc = {
+          "@timestamp": new Date().toISOString(),
+          error_type: "data_corruption",
+          message: "Malformed data written to app-transactions: invalid field types",
+          severity: "WARNING",
+          context: { corrupted_fields: ["@timestamp", "request_path", "status", "duration_ms"] },
+        };
+        await logAppError(errorDoc);
+      } else {
+        // Normal transaction log
+        await logTransaction({
+          "@timestamp": new Date().toISOString(),
+          request_path: "/data",
+          status: 200,
+          duration_ms: durationMs,
+          dsql_rows_returned: rows.length,
+        });
+      }
+
       return {
         statusCode: 200,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-        body: JSON.stringify({ success: true, data: rows, sleepInjected: sleepSec })
+        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+        body: JSON.stringify({ success: true, data: rows, sleepInjected: sleepSec }),
       };
     } catch (err) {
-      console.error('[ERROR]', err.message, err.stack);
-      // Log in a format that CloudWatch metric filter can catch
-      console.error(JSON.stringify({ metric: 'AppError', error: err.message }));
+      const durationMs = Date.now() - startTime;
+      console.error("[ERROR]", err.message, err.stack);
+      console.error(JSON.stringify({ metric: "AppError", error: err.message }));
+      await logAppError({
+        "@timestamp": new Date().toISOString(),
+        error_type: "infrastructure",
+        message: err.message,
+        severity: "CRITICAL",
+        context: { duration_ms: durationMs, stack: err.stack?.slice(0, 500) },
+      });
       return {
         statusCode: 500,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-        body: JSON.stringify({ success: false, error: err.message })
+        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+        body: JSON.stringify({ success: false, error: err.message }),
       };
     }
   }
 
-  return { statusCode: 404, body: 'Not Found' };
+  return { statusCode: 404, body: "Not Found" };
 };
 
 function getTestPageHtml() {
@@ -126,14 +250,10 @@ h1{color:#58a6ff;margin-bottom:8px}
 .card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px}
 .card h3{color:#58a6ff;font-size:13px;text-transform:uppercase;margin-bottom:12px}
 button{border:none;padding:10px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;margin:4px;transition:all 0.2s}
-.btn-primary{background:#238636;color:#fff}
-.btn-primary:hover{background:#2ea043}
-.btn-danger{background:#da3633;color:#fff}
-.btn-danger:hover{background:#f85149}
-.btn-warning{background:#9e6a03;color:#fff}
-.btn-warning:hover{background:#bb8009}
-.btn-secondary{background:#30363d;color:#c9d1d9}
-.btn-secondary:hover{background:#484f58}
+.btn-primary{background:#238636;color:#fff}.btn-primary:hover{background:#2ea043}
+.btn-danger{background:#da3633;color:#fff}.btn-danger:hover{background:#f85149}
+.btn-warning{background:#9e6a03;color:#fff}.btn-warning:hover{background:#bb8009}
+.btn-secondary{background:#30363d;color:#c9d1d9}.btn-secondary:hover{background:#484f58}
 #status{padding:12px;border-radius:8px;margin-bottom:16px;font-size:13px;display:none}
 .status-ok{background:#0d2818;border:1px solid #3fb950;color:#3fb950;display:block}
 .status-error{background:#2d1214;border:1px solid #da3633;color:#f85149;display:block}
@@ -142,11 +262,10 @@ table{width:100%;border-collapse:collapse;font-size:12px;margin-top:12px}
 th,td{padding:8px;text-align:left;border-bottom:1px solid #30363d}
 th{color:#58a6ff;font-weight:600}
 #log{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:12px;font-family:monospace;font-size:11px;max-height:200px;overflow-y:auto;white-space:pre-wrap;margin-top:12px}
-.inject-desc{color:#8b949e;font-size:11px;margin-top:4px}
 </style></head><body>
 <div class="container">
 <h1>Serverless App Dashboard</h1>
-<p class="sub">Connected to Aurora DSQL | DevOps Agent monitors this app</p>
+<p class="sub">Connected to Aurora DSQL + OpenSearch Serverless | DevOps Agent monitors this app</p>
 <div id="status"></div>
 <div class="grid">
 <div class="card">
@@ -159,75 +278,30 @@ th{color:#58a6ff;font-weight:600}
 <div class="card">
 <h3>Error Injection</h3>
 <button class="btn-danger" onclick="inject('remove_dsql_permission')">Remove DSQL Permission</button>
-<p class="inject-desc">Removes Lambda IAM permission to connect to DSQL. Causes immediate 500 errors. Alarm triggers after 3 errors.</p>
+<p style="color:#8b949e;font-size:11px;margin:4px 0">Causes immediate 500 errors</p>
+<button class="btn-warning" onclick="inject('inject_timeout')">Inject Timeout (20s)</button>
+<p style="color:#8b949e;font-size:11px;margin:4px 0">Lambda sleeps past timeout</p>
+<button class="btn-danger" onclick="inject('inject_data_corruption')">Inject Data Corruption</button>
+<p style="color:#8b949e;font-size:11px;margin:4px 0">Writes malformed data to OpenSearch</p>
+<button class="btn-danger" onclick="inject('inject_business_logic_error')">Inject Business Logic Error</button>
+<p style="color:#8b949e;font-size:11px;margin:4px 0">Simulates invalid state transitions</p>
 <br>
-<button class="btn-warning" onclick="inject('inject_timeout')">Inject Timeout (20s sleep)</button>
-<p class="inject-desc">Sets SSM parameter to make Lambda sleep 20s before responding. Causes timeout errors (Lambda timeout = 15s).</p>
-<br><br>
-<button class="btn-secondary" onclick="inject('restore_dsql_permission')">Restore DSQL Permission</button>
+<button class="btn-secondary" onclick="inject('restore_dsql_permission')">Restore DSQL</button>
 <button class="btn-secondary" onclick="inject('restore_timeout')">Restore Timeout</button>
+<button class="btn-secondary" onclick="inject('restore_app_errors')">Restore App Errors</button>
 </div>
 </div>
-<div class="card">
-<h3>Event Log</h3>
-<div id="log"></div>
-</div>
+<div class="card"><h3>Event Log</h3><div id="log"></div></div>
 </div>
 <script>
-var autoInterval = null;
-function setStatus(type, msg) {
-  var el = document.getElementById('status');
-  el.className = 'status-' + type;
-  el.textContent = msg;
-}
-function log(msg) {
-  var el = document.getElementById('log');
-  var ts = new Date().toLocaleTimeString();
-  el.textContent = '[' + ts + '] ' + msg + String.fromCharCode(10) + el.textContent;
-}
-async function fetchData() {
-  setStatus('loading', 'Fetching data from DSQL...');
-  try {
-    var r = await fetch('/data?t=' + Date.now());
-    if (!r.ok) {
-      var err = await r.json().catch(function(){return {error:'HTTP '+r.status}});
-      setStatus('error', 'ERROR: ' + (err.error || r.statusText));
-      log('ERROR: ' + (err.error || r.statusText));
-      return;
-    }
-    var d = await r.json();
-    setStatus('ok', 'Success' + (d.sleepInjected > 0 ? ' (delayed ' + d.sleepInjected + 's)' : ''));
-    log('Fetched ' + d.data.length + ' rows' + (d.sleepInjected > 0 ? ' [delayed '+d.sleepInjected+'s]' : ''));
-    renderTable(d.data);
-  } catch(e) {
-    setStatus('error', 'TIMEOUT/NETWORK ERROR: ' + e.message);
-    log('TIMEOUT: ' + e.message);
-  }
-}
-function renderTable(rows) {
-  if (!rows.length) { document.getElementById('data-table').innerHTML = '<p style="color:#8b949e;margin-top:12px">No data</p>'; return; }
-  var html = '<table><tr><th>ID</th><th>Type</th><th>Message</th><th>Time</th></tr>';
-  rows.forEach(function(r) {
-    html += '<tr><td>'+r.id+'</td><td>'+r.event_type+'</td><td>'+r.message+'</td><td>'+new Date(r.created_at).toLocaleTimeString()+'</td></tr>';
-  });
-  html += '</table>';
-  document.getElementById('data-table').innerHTML = html;
-}
-function autoFetch() { if(autoInterval) clearInterval(autoInterval); autoInterval = setInterval(fetchData, 3000); fetchData(); log('Auto-fetch started (3s interval)'); }
-function stopAuto() { if(autoInterval){clearInterval(autoInterval);autoInterval=null;} log('Auto-fetch stopped'); }
-async function inject(action) {
-  log('Injecting: ' + action + '...');
-  try {
-    var r = await fetch('/inject', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({action: action}) });
-    var d = await r.json();
-    if (d.success) {
-      log('Injection success: ' + d.message);
-      setStatus(action.startsWith('restore') ? 'ok' : 'error', d.message);
-    } else {
-      log('Injection failed: ' + d.error);
-    }
-  } catch(e) { log('Injection error: ' + e.message); }
-}
+var autoInterval=null;
+function setStatus(t,m){var e=document.getElementById('status');e.className='status-'+t;e.textContent=m}
+function log(m){var e=document.getElementById('log');e.textContent='['+new Date().toLocaleTimeString()+'] '+m+'\\n'+e.textContent}
+async function fetchData(){setStatus('loading','Fetching...');try{var r=await fetch('/data?t='+Date.now());if(!r.ok){var err=await r.json().catch(()=>({error:'HTTP '+r.status}));setStatus('error','ERROR: '+(err.error||r.statusText));log('ERROR: '+(err.error||r.statusText));return}var d=await r.json();setStatus('ok','Success'+(d.sleepInjected>0?' (delayed '+d.sleepInjected+'s)':''));log('Fetched '+d.data.length+' rows');renderTable(d.data)}catch(e){setStatus('error','TIMEOUT: '+e.message);log('TIMEOUT: '+e.message)}}
+function renderTable(rows){if(!rows.length){document.getElementById('data-table').innerHTML='<p style="color:#8b949e;margin-top:12px">No data</p>';return}var h='<table><tr><th>ID</th><th>Type</th><th>Message</th><th>Time</th></tr>';rows.forEach(r=>{h+='<tr><td>'+r.id+'</td><td>'+r.event_type+'</td><td>'+r.message+'</td><td>'+new Date(r.created_at).toLocaleTimeString()+'</td></tr>'});document.getElementById('data-table').innerHTML=h+'</table>'}
+function autoFetch(){if(autoInterval)clearInterval(autoInterval);autoInterval=setInterval(fetchData,3000);fetchData();log('Auto-fetch started')}
+function stopAuto(){if(autoInterval){clearInterval(autoInterval);autoInterval=null}log('Auto-fetch stopped')}
+async function inject(action){log('Injecting: '+action+'...');try{var r=await fetch('/inject',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})});var d=await r.json();log(d.success?'OK: '+d.message:'FAIL: '+d.error)}catch(e){log('Error: '+e.message)}}
 fetchData();
 </script></body></html>`;
 }
