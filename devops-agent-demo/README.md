@@ -124,17 +124,51 @@ Logs application-level errors:
 }
 ```
 
+## OpenSearch MCP Server
+
+The project includes an OpenSearch MCP Server deployed as a Lambda function, enabling DevOps Agent to query OpenSearch indexes using the Model Context Protocol.
+
+### How It Works
+
+- **Package**: [`opensearch-mcp-server-py`](https://github.com/opensearch-project/opensearch-mcp-server-py) from PyPI
+- **Transport**: Streamable HTTP (served via Lambda Function URL)
+- **Auth to OpenSearch**: IAM (SigV4) via the Lambda execution role
+- **Available Tools**: ListIndexTool, SearchIndexTool, IndexMappingTool, ClusterHealthTool, CountTool
+
+### Connecting DevOps Agent
+
+The MCP server endpoint is output as `mcp_server_function_url`. Configure DevOps Agent to connect:
+
+```json
+{
+  "mcpServers": {
+    "opensearch": {
+      "url": "<mcp_server_function_url>/mcp",
+      "transport": "streamable-http"
+    }
+  }
+}
+```
+
+If using `AWS_IAM` auth (default), the caller must sign requests with SigV4 for the `lambda` service.
+
+To disable the MCP server: `terraform apply -var='enable_mcp_server=false'`
+
 ## Project Structure
 
 ```
 ├── main.tf           # Core infrastructure (Lambda, API GW, CloudWatch, SNS)
 ├── vpc.tf            # VPC, subnets, VPC endpoints
 ├── opensearch.tf     # OpenSearch Serverless collection & policies
+├── mcp-server.tf     # OpenSearch MCP Server Lambda + Function URL
 ├── terraform.tfvars  # Variable values
 ├── lambda/
 │   ├── index.js      # App Lambda (DSQL + OpenSearch)
 │   ├── injector.js   # Fault injection Lambda
 │   └── webhook-bridge.js  # SNS → DevOps Agent webhook
+├── mcp-server/
+│   ├── handler.py    # MCP Server Lambda handler (Mangum + opensearch-mcp-server-py)
+│   └── requirements.txt
 └── skills/
     ├── investigate-app-failure.md
     └── investigate-opensearch-app-errors.md
