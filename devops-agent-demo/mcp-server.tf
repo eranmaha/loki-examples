@@ -294,7 +294,7 @@ resource "aws_instance" "mcp_server" {
     "Environment=OPENSEARCH_IS_SERVERLESS=true",
     "Environment=OPENSEARCH_REGION=${var.region}",
     "Environment=PYTHONPATH=/opt/mcp-server",
-    "ExecStart=/usr/bin/python3.12 -m mcp_server_opensearch --transport streamable-http --port 8081 --host 127.0.0.1",
+    "ExecStart=/usr/bin/python3.12 -m mcp_server_opensearch --transport stream --port 8081 --host 127.0.0.1",
     "Restart=always",
     "RestartSec=5",
     "[Install]",
