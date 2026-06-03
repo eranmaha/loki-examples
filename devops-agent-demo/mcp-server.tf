@@ -165,6 +165,19 @@ resource "aws_security_group" "mcp_server" {
   }
 }
 
+# ─── MCP Server Network Interface (for stable IP in TLS cert) ────────────────
+
+resource "aws_network_interface" "mcp_server" {
+  count           = var.enable_mcp_server ? 1 : 0
+  subnet_id       = aws_subnet.private[0].id
+  security_groups = [aws_security_group.mcp_server[0].id]
+
+  tags = {
+    Name    = "${var.project_name}-mcp-server"
+    Project = var.project_name
+  }
+}
+
 # ─── MCP Server TLS Certificate ──────────────────────────────────────────────
 
 resource "tls_private_key" "mcp_server" {
@@ -178,9 +191,11 @@ resource "tls_self_signed_cert" "mcp_server" {
   private_key_pem = tls_private_key.mcp_server[0].private_key_pem
 
   subject {
-    common_name  = "mcp-server"
+    common_name  = aws_network_interface.mcp_server[0].private_ip
     organization = "devops-agent-demo"
   }
+
+  ip_addresses = [aws_network_interface.mcp_server[0].private_ip]
 
   validity_period_hours = 87600 # 10 years
 
@@ -218,12 +233,15 @@ resource "aws_secretsmanager_secret_version" "mcp_api_key" {
 # ─── EC2 Instance ────────────────────────────────────────────────────────────
 
 resource "aws_instance" "mcp_server" {
-  count                  = var.enable_mcp_server ? 1 : 0
-  ami                    = data.aws_ssm_parameter.al2023_arm64.value
-  instance_type          = "t4g.small"
-  subnet_id              = aws_subnet.private[0].id
-  iam_instance_profile   = aws_iam_instance_profile.mcp_server[0].name
-  vpc_security_group_ids = [aws_security_group.mcp_server[0].id]
+  count                = var.enable_mcp_server ? 1 : 0
+  ami                  = data.aws_ssm_parameter.al2023_arm64.value
+  instance_type        = "t4g.small"
+  iam_instance_profile = aws_iam_instance_profile.mcp_server[0].name
+
+  network_interface {
+    network_interface_id = aws_network_interface.mcp_server[0].id
+    device_index         = 0
+  }
 
   metadata_options {
     http_endpoint               = "enabled"
@@ -341,17 +359,17 @@ resource "aws_opensearchserverless_access_policy" "mcp_data" {
 # ─── Outputs ─────────────────────────────────────────────────────────────────
 
 output "mcp_server_private_ip" {
-  value       = var.enable_mcp_server ? aws_instance.mcp_server[0].private_ip : ""
+  value       = var.enable_mcp_server ? aws_network_interface.mcp_server[0].private_ip : ""
   description = "OpenSearch MCP Server EC2 private IP"
 }
 
 output "mcp_server_host_address" {
-  value       = var.enable_mcp_server ? "${aws_instance.mcp_server[0].private_ip}:8080" : ""
+  value       = var.enable_mcp_server ? "${aws_network_interface.mcp_server[0].private_ip}:8080" : ""
   description = "OpenSearch MCP Server host:port (for DevOps Agent private connection)"
 }
 
 output "mcp_server_url" {
-  value       = var.enable_mcp_server ? "http://${aws_instance.mcp_server[0].private_ip}:8080/mcp" : ""
+  value       = var.enable_mcp_server ? "http://${aws_network_interface.mcp_server[0].private_ip}:8080/mcp" : ""
   description = "OpenSearch MCP Server full URL (for DevOps Agent MCP registration)"
 }
 
