@@ -139,20 +139,6 @@ resource "aws_iam_role_policy" "lambda_base" {
           aws_ssm_parameter.data_corruption.arn,
           aws_ssm_parameter.business_logic_error.arn,
         ]
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "ec2:CreateNetworkInterface",
-          "ec2:DescribeNetworkInterfaces",
-          "ec2:DeleteNetworkInterface"
-        ]
-        Resource = "*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["aoss:APIAccessAll"]
-        Resource = "arn:aws:aoss:${var.region}:${var.account_id}:collection/*"
       }
     ]
   })
@@ -191,11 +177,6 @@ resource "aws_lambda_function" "app" {
   filename         = data.archive_file.lambda_zip.output_path
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
 
-  vpc_config {
-    subnet_ids         = aws_subnet.private[*].id
-    security_group_ids = [aws_security_group.lambda.id]
-  }
-
   environment {
     variables = {
       DSQL_ENDPOINT             = var.dsql_cluster_endpoint
@@ -204,7 +185,7 @@ resource "aws_lambda_function" "app" {
       SSM_DATA_CORRUPTION_PARAM = aws_ssm_parameter.data_corruption.name
       SSM_BIZ_ERROR_PARAM       = aws_ssm_parameter.business_logic_error.name
       PROJECT_NAME              = var.project_name
-      OPENSEARCH_ENDPOINT       = aws_opensearchserverless_collection.logs.collection_endpoint
+      LOGGER_FUNCTION_NAME      = aws_lambda_function.opensearch_logger.function_name
     }
   }
 
@@ -465,15 +446,6 @@ resource "aws_iam_role_policy" "injector_policy" {
           aws_ssm_parameter.data_corruption.arn,
           aws_ssm_parameter.business_logic_error.arn,
         ]
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "ec2:CreateNetworkInterface",
-          "ec2:DescribeNetworkInterfaces",
-          "ec2:DeleteNetworkInterface"
-        ]
-        Resource = "*"
       }
     ]
   })
@@ -495,11 +467,6 @@ resource "aws_lambda_function" "injector" {
   memory_size      = 128
   filename         = data.archive_file.injector_zip.output_path
   source_code_hash = data.archive_file.injector_zip.output_base64sha256
-
-  vpc_config {
-    subnet_ids         = aws_subnet.private[*].id
-    security_group_ids = [aws_security_group.lambda.id]
-  }
 
   environment {
     variables = {
@@ -532,6 +499,95 @@ resource "aws_lambda_permission" "injector_apigw" {
   action        = "lambda:InvokeFunction"
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.api.execution_arn}/*/*"
+}
+
+# ─── OpenSearch Logger Lambda ───────────────────────────────────────────────
+
+resource "aws_iam_role" "logger_role" {
+  name = "${var.project_name}-logger-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+    }]
+  })
+  tags = { Project = var.project_name }
+}
+
+resource "aws_iam_role_policy" "logger_policy" {
+  name = "logger"
+  role = aws_iam_role.logger_role.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:CreateNetworkInterface",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DeleteNetworkInterface"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["aoss:APIAccessAll"]
+        Resource = "arn:aws:aoss:${var.region}:${var.account_id}:collection/*"
+      }
+    ]
+  })
+}
+
+data "archive_file" "logger_zip" {
+  type        = "zip"
+  source_file = "${path.module}/lambda/opensearch-logger.js"
+  output_path = "${path.module}/.build/opensearch-logger.zip"
+}
+
+resource "aws_lambda_function" "opensearch_logger" {
+  function_name    = "${var.project_name}-opensearch-logger"
+  role             = aws_iam_role.logger_role.arn
+  handler          = "opensearch-logger.handler"
+  runtime          = "nodejs20.x"
+  architectures    = ["arm64"]
+  timeout          = 30
+  memory_size      = 256
+  filename         = data.archive_file.logger_zip.output_path
+  source_code_hash = data.archive_file.logger_zip.output_base64sha256
+
+  vpc_config {
+    subnet_ids         = aws_subnet.private[*].id
+    security_group_ids = [aws_security_group.lambda.id]
+  }
+
+  environment {
+    variables = {
+      OPENSEARCH_ENDPOINT = aws_opensearchserverless_collection.logs.collection_endpoint
+    }
+  }
+
+  tags = { Project = var.project_name }
+}
+
+# Allow app Lambda to invoke the logger
+resource "aws_iam_role_policy" "app_invoke_logger" {
+  name = "invoke-logger"
+  role = aws_iam_role.lambda_role.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["lambda:InvokeFunction"]
+      Resource = aws_lambda_function.opensearch_logger.arn
+    }]
+  })
 }
 
 # ─── Outputs ────────────────────────────────────────────────────────────────

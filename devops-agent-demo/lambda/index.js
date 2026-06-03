@@ -1,18 +1,16 @@
 const { DsqlSigner } = require("@aws-sdk/dsql-signer");
 const { SSMClient, GetParameterCommand } = require("@aws-sdk/client-ssm");
+const { LambdaClient, InvokeCommand } = require("@aws-sdk/client-lambda");
 const { Client } = require("pg");
-const { defaultProvider } = require("@aws-sdk/credential-provider-node");
-const { SignatureV4 } = require("@smithy/signature-v4");
-const { Sha256 } = require("@aws-crypto/sha256-js");
-const { HttpRequest } = require("@smithy/protocol-http");
 
 const ssm = new SSMClient({});
+const lambda = new LambdaClient({});
 const DSQL_ENDPOINT = process.env.DSQL_ENDPOINT;
 const DSQL_REGION = process.env.DSQL_REGION;
 const SSM_SLEEP_PARAM = process.env.SSM_SLEEP_PARAM;
 const SSM_DATA_CORRUPTION_PARAM = process.env.SSM_DATA_CORRUPTION_PARAM;
 const SSM_BIZ_ERROR_PARAM = process.env.SSM_BIZ_ERROR_PARAM;
-const OPENSEARCH_ENDPOINT = process.env.OPENSEARCH_ENDPOINT;
+const LOGGER_FUNCTION_NAME = process.env.LOGGER_FUNCTION_NAME;
 
 async function getToken() {
   const signer = new DsqlSigner({ hostname: DSQL_ENDPOINT, region: DSQL_REGION });
@@ -32,61 +30,27 @@ async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// ─── OpenSearch Serverless SigV4 request ────────────────────────────────────
+// ─── Async logging via OpenSearch Logger Lambda ─────────────────────────────
 
-async function opensearchRequest(method, path, body) {
-  if (!OPENSEARCH_ENDPOINT) return;
+async function invokeLogger(index, document) {
+  if (!LOGGER_FUNCTION_NAME) return;
   try {
-    const url = new URL(path, OPENSEARCH_ENDPOINT);
-    const request = new HttpRequest({
-      method,
-      hostname: url.hostname,
-      path: url.pathname,
-      headers: {
-        host: url.hostname,
-        "content-type": "application/json",
-      },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-
-    const signer = new SignatureV4({
-      service: "aoss",
-      region: DSQL_REGION,
-      credentials: defaultProvider(),
-      sha256: Sha256,
-    });
-
-    const signed = await signer.sign(request);
-    const https = require("https");
-    await new Promise((resolve, reject) => {
-      const req = https.request(
-        {
-          hostname: signed.hostname,
-          path: signed.path,
-          method: signed.method,
-          headers: signed.headers,
-        },
-        (res) => {
-          let data = "";
-          res.on("data", (chunk) => (data += chunk));
-          res.on("end", () => resolve(data));
-        }
-      );
-      req.on("error", reject);
-      if (signed.body) req.write(signed.body);
-      req.end();
-    });
+    await lambda.send(new InvokeCommand({
+      FunctionName: LOGGER_FUNCTION_NAME,
+      InvocationType: "Event",
+      Payload: JSON.stringify({ index, document }),
+    }));
   } catch (e) {
-    console.warn("[OPENSEARCH] Write failed:", e.message);
+    console.warn("[LOGGER] Async invoke failed:", e.message);
   }
 }
 
 async function logTransaction(doc) {
-  await opensearchRequest("POST", "/app-transactions/_doc", doc);
+  await invokeLogger("app-transactions", doc);
 }
 
 async function logAppError(doc) {
-  await opensearchRequest("POST", "/app-errors/_doc", doc);
+  await invokeLogger("app-errors", doc);
 }
 
 // ─── Database ───────────────────────────────────────────────────────────────
@@ -179,16 +143,16 @@ exports.handler = async (event) => {
       const rows = await queryDb();
       const durationMs = Date.now() - startTime;
 
-      // Data corruption injection — write malformed data to OpenSearch
+      // Data corruption injection
       if (corruptionFlag === "true") {
         const corruptDoc = {
           "@timestamp": "not-a-date",
-          request_path: 12345, // should be string
-          status: "two-hundred", // should be number
-          duration_ms: "fast", // should be number
+          request_path: 12345,
+          status: "two-hundred",
+          duration_ms: "fast",
           dsql_rows_returned: null,
         };
-        await opensearchRequest("POST", "/app-transactions/_doc", corruptDoc);
+        await invokeLogger("app-transactions", corruptDoc);
         const errorDoc = {
           "@timestamp": new Date().toISOString(),
           error_type: "data_corruption",

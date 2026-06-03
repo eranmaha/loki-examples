@@ -59,6 +59,7 @@ resource "aws_opensearchserverless_access_policy" "data" {
     ]
     Principal = [
       aws_iam_role.lambda_role.arn,
+      aws_iam_role.logger_role.arn,
       "arn:aws:iam::${var.account_id}:root"
     ]
   }])
