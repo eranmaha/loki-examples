@@ -189,5 +189,10 @@ output "mcp_server_private_ip" {
 
 output "mcp_server_host_address" {
   value       = var.enable_mcp_server ? "${aws_instance.mcp_server[0].private_ip}:8080" : ""
-  description = "OpenSearch MCP Server endpoint (Streamable HTTP)"
+  description = "OpenSearch MCP Server host:port (for DevOps Agent private connection)"
+}
+
+output "mcp_server_url" {
+  value       = var.enable_mcp_server ? "http://${aws_instance.mcp_server[0].private_ip}:8080/mcp" : ""
+  description = "OpenSearch MCP Server full URL (for DevOps Agent MCP registration)"
 }
