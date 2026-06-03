@@ -47,7 +47,8 @@ variable "dsql_cluster_arn" {
 }
 
 variable "devops_agent_webhook_url" {
-  default = "https://event-ai.us-east-1.api.aws/webhook/generic/b4388eea-45d7-49ba-a107-79a5fbf04c9a"
+  description = "DevOps Agent webhook URL for alarm notifications"
+  type        = string
 }
 
 variable "webhook_secret" {
