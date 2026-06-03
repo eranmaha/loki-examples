@@ -6,6 +6,69 @@ variable "enable_mcp_server" {
   default     = true
 }
 
+# ─── S3 Bucket for MCP Server Package ────────────────────────────────────────
+
+resource "aws_s3_bucket" "mcp_assets" {
+  count  = var.enable_mcp_server ? 1 : 0
+  bucket = "${var.project_name}-assets-${data.aws_caller_identity.current.account_id}"
+
+  tags = {
+    Project = var.project_name
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "mcp_assets" {
+  count  = var.enable_mcp_server ? 1 : 0
+  bucket = aws_s3_bucket.mcp_assets[0].id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# ─── Pre-build MCP Server Package ────────────────────────────────────────────
+
+resource "null_resource" "mcp_server_package" {
+  count = var.enable_mcp_server ? 1 : 0
+
+  triggers = {
+    always_run = timestamp()
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      rm -rf ${path.module}/.build/mcp-pkg
+      mkdir -p ${path.module}/.build/mcp-pkg
+      pip install opensearch-mcp-server-py \
+        -t ${path.module}/.build/mcp-pkg/ \
+        --platform manylinux2014_aarch64 \
+        --only-binary=:all: \
+        --python-version 3.12 \
+        --implementation cp
+    EOT
+  }
+}
+
+data "archive_file" "mcp_server_package" {
+  count       = var.enable_mcp_server ? 1 : 0
+  type        = "zip"
+  source_dir  = "${path.module}/.build/mcp-pkg"
+  output_path = "${path.module}/.build/mcp-server-pkg.zip"
+
+  depends_on = [null_resource.mcp_server_package]
+}
+
+resource "aws_s3_object" "mcp_server_package" {
+  count  = var.enable_mcp_server ? 1 : 0
+  bucket = aws_s3_bucket.mcp_assets[0].id
+  key    = "mcp-server-pkg.zip"
+  source = data.archive_file.mcp_server_package[0].output_path
+  etag   = data.archive_file.mcp_server_package[0].output_md5
+
+  depends_on = [data.archive_file.mcp_server_package]
+}
+
 # ─── AMI Lookup ──────────────────────────────────────────────────────────────
 
 data "aws_ssm_parameter" "al2023_arm64" {
@@ -51,6 +114,11 @@ resource "aws_iam_role_policy" "mcp_server_policy" {
           "logs:PutLogEvents"
         ]
         Resource = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "arn:aws:s3:::${var.project_name}-assets-${data.aws_caller_identity.current.account_id}/*"
       }
     ]
   })
@@ -169,8 +237,11 @@ resource "aws_instance" "mcp_server" {
     # Install Python 3.12 + pip + nginx
     dnf install -y python3.12 python3.12-pip nginx
 
-    # Install opensearch-mcp-server-py
-    python3.12 -m pip install opensearch-mcp-server-py
+    # Download pre-built MCP server package from S3
+    aws s3 cp s3://${aws_s3_bucket.mcp_assets[0].id}/mcp-server-pkg.zip /tmp/mcp-server-pkg.zip
+    mkdir -p /opt/mcp-server
+    cd /opt/mcp-server && unzip /tmp/mcp-server-pkg.zip
+    rm /tmp/mcp-server-pkg.zip
 
     # Store the API key
     MCP_API_KEY="${random_password.mcp_api_key[0].result}"
@@ -229,7 +300,8 @@ resource "aws_instance" "mcp_server" {
     Environment=OPENSEARCH_AUTH=iam
     Environment=OPENSEARCH_IS_SERVERLESS=true
     Environment=OPENSEARCH_REGION=us-east-1
-    ExecStart=/usr/local/bin/opensearch-mcp-server-py --transport streamable-http --port 8081 --host 127.0.0.1
+    Environment=PYTHONPATH=/opt/mcp-server
+    ExecStart=/usr/bin/python3.12 -m opensearch_mcp_server --transport streamable-http --port 8081 --host 127.0.0.1
     Restart=always
     RestartSec=5
 

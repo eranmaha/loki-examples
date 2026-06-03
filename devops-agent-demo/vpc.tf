@@ -95,6 +95,8 @@ locals {
   interface_endpoints = {
     logs           = "com.amazonaws.${var.region}.logs"
     ssm            = "com.amazonaws.${var.region}.ssm"
+    ssmmessages    = "com.amazonaws.${var.region}.ssmmessages"
+    ec2messages    = "com.amazonaws.${var.region}.ec2messages"
     secretsmanager = "com.amazonaws.${var.region}.secretsmanager"
     dsql           = "com.amazonaws.${var.region}.dsql"
     dsql-data      = "com.amazonaws.${var.region}.dsql-fnh4"
