@@ -111,8 +111,18 @@ case "$ACTION" in
     terraform plan "${TF_VARS[@]}"
     ;;
   apply)
+    # Support TF_TARGETS env var for targeted apply
+    # Example: TF_TARGETS="aws_lambda_function.opensearch_logger,data.archive_file.logger_zip" ./deploy.sh
+    TARGET_ARGS=()
+    if [[ -n "${TF_TARGETS:-}" ]]; then
+      IFS=',' read -ra TARGETS <<< "$TF_TARGETS"
+      for t in "${TARGETS[@]}"; do
+        TARGET_ARGS+=("-target=$t")
+      done
+      log "Targeted apply: ${TARGETS[*]}"
+    fi
     log "Running terraform apply..."
-    terraform apply -auto-approve "${TF_VARS[@]}"
+    terraform apply -auto-approve "${TF_VARS[@]}" "${TARGET_ARGS[@]}"
     echo ""
     log "Deploy complete! Outputs:"
     terraform output
