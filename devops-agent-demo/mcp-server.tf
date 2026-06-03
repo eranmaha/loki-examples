@@ -230,89 +230,79 @@ resource "aws_instance" "mcp_server" {
     http_put_response_hop_limit = 1
   }
 
-  user_data = base64encode(<<-EOF
-    #!/bin/bash
-    set -ex
-
-    # Install Python 3.12 + pip + nginx
-    dnf install -y python3.12 python3.12-pip nginx
-
-    # Download pre-built MCP server package from S3
-    aws s3 cp s3://${aws_s3_bucket.mcp_assets[0].id}/mcp-server-pkg.zip /tmp/mcp-server-pkg.zip
-    mkdir -p /opt/mcp-server
-    cd /opt/mcp-server && unzip /tmp/mcp-server-pkg.zip
-    rm /tmp/mcp-server-pkg.zip
-
-    # Store the API key
-    MCP_API_KEY="${random_password.mcp_api_key[0].result}"
-
-    # Generate self-signed TLS cert (from Terraform)
-    mkdir -p /etc/nginx/ssl
-    cat > /etc/nginx/ssl/mcp.crt <<'CERT'
-    ${tls_self_signed_cert.mcp_server[0].cert_pem}
-    CERT
-    cat > /etc/nginx/ssl/mcp.key <<'KEY'
-    ${tls_private_key.mcp_server[0].private_key_pem}
-    KEY
-
-    # Configure nginx as HTTPS API key auth proxy on port 8080 -> MCP on 8081
-    cat > /etc/nginx/conf.d/mcp-proxy.conf <<NGINX
-    server {
-        listen 8080 ssl;
-        ssl_certificate /etc/nginx/ssl/mcp.crt;
-        ssl_certificate_key /etc/nginx/ssl/mcp.key;
-        ssl_protocols TLSv1.2 TLSv1.3;
-
-        location / {
-            # Validate API key header
-            if (\$http_x_api_key != "$MCP_API_KEY") {
-                return 401 '{"error": "Unauthorized"}';  
-            }
-
-            proxy_pass http://127.0.0.1:8081;
-            proxy_set_header Host \$host;
-            proxy_set_header X-Real-IP \$remote_addr;
-            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade \$http_upgrade;
-            proxy_set_header Connection "upgrade";
-            proxy_read_timeout 300s;
-        }
-    }
-    NGINX
-
-    # Remove default nginx server block
-    rm -f /etc/nginx/conf.d/default.conf
-    sed -i '/server {/,/^}/d' /etc/nginx/nginx.conf 2>/dev/null || true
-
-    # Start nginx
-    systemctl enable --now nginx
-
-    # Create systemd service for MCP server on port 8081 (behind nginx)
-    cat > /etc/systemd/system/mcp-server.service <<'UNIT'
-    [Unit]
-    Description=OpenSearch MCP Server (Streamable HTTP)
-    After=network.target
-
-    [Service]
-    Type=simple
-    Environment=OPENSEARCH_URL=${aws_opensearchserverless_collection.logs.collection_endpoint}
-    Environment=OPENSEARCH_AUTH=iam
-    Environment=OPENSEARCH_IS_SERVERLESS=true
-    Environment=OPENSEARCH_REGION=us-east-1
-    Environment=PYTHONPATH=/opt/mcp-server
-    ExecStart=/usr/bin/python3.12 -m opensearch_mcp_server --transport streamable-http --port 8081 --host 127.0.0.1
-    Restart=always
-    RestartSec=5
-
-    [Install]
-    WantedBy=multi-user.target
-    UNIT
-
-    systemctl daemon-reload
-    systemctl enable --now mcp-server
-  EOF
-  )
+  user_data = base64encode(join("\n", [
+    "#!/bin/bash",
+    "set -ex",
+    "",
+    "# Install Python 3.12 + nginx",
+    "dnf install -y python3.12 nginx",
+    "",
+    "# Download pre-built MCP server package from S3",
+    "aws s3 cp s3://${aws_s3_bucket.mcp_assets[0].id}/mcp-server-pkg.zip /tmp/mcp-server-pkg.zip",
+    "mkdir -p /opt/mcp-server",
+    "cd /opt/mcp-server && unzip /tmp/mcp-server-pkg.zip",
+    "rm /tmp/mcp-server-pkg.zip",
+    "",
+    "# Write TLS cert",
+    "mkdir -p /etc/nginx/ssl",
+    "cat > /etc/nginx/ssl/mcp.crt << 'CERTEOF'",
+    tls_self_signed_cert.mcp_server[0].cert_pem,
+    "CERTEOF",
+    "cat > /etc/nginx/ssl/mcp.key << 'KEYEOF'",
+    tls_private_key.mcp_server[0].private_key_pem,
+    "KEYEOF",
+    "",
+    "# Configure nginx as HTTPS API key auth proxy",
+    "cat > /etc/nginx/conf.d/mcp-proxy.conf << 'NGINXEOF'",
+    "server {",
+    "    listen 8080 ssl;",
+    "    ssl_certificate /etc/nginx/ssl/mcp.crt;",
+    "    ssl_certificate_key /etc/nginx/ssl/mcp.key;",
+    "    ssl_protocols TLSv1.2 TLSv1.3;",
+    "    location / {",
+    "        set $api_key_valid 0;",
+    "        if ($http_x_api_key = '${random_password.mcp_api_key[0].result}') {",
+    "            set $api_key_valid 1;",
+    "        }",
+    "        if ($api_key_valid = 0) {",
+    "            return 401;",
+    "        }",
+    "        proxy_pass http://127.0.0.1:8081;",
+    "        proxy_set_header Host $host;",
+    "        proxy_http_version 1.1;",
+    "        proxy_set_header Upgrade $http_upgrade;",
+    "        proxy_set_header Connection 'upgrade';",
+    "        proxy_read_timeout 300s;",
+    "    }",
+    "}",
+    "NGINXEOF",
+    "",
+    "# Remove default nginx config",
+    "rm -f /etc/nginx/conf.d/default.conf",
+    "systemctl enable --now nginx",
+    "",
+    "# Create systemd service for MCP server",
+    "cat > /etc/systemd/system/mcp-server.service << 'UNITEOF'",
+    "[Unit]",
+    "Description=OpenSearch MCP Server",
+    "After=network.target",
+    "[Service]",
+    "Type=simple",
+    "Environment=OPENSEARCH_URL=${aws_opensearchserverless_collection.logs.collection_endpoint}",
+    "Environment=OPENSEARCH_AUTH=iam",
+    "Environment=OPENSEARCH_IS_SERVERLESS=true",
+    "Environment=OPENSEARCH_REGION=${var.region}",
+    "Environment=PYTHONPATH=/opt/mcp-server",
+    "ExecStart=/usr/bin/python3.12 -m opensearch_mcp_server --transport streamable-http --port 8081 --host 127.0.0.1",
+    "Restart=always",
+    "RestartSec=5",
+    "[Install]",
+    "WantedBy=multi-user.target",
+    "UNITEOF",
+    "",
+    "systemctl daemon-reload",
+    "systemctl enable --now mcp-server",
+  ]))
 
   tags = {
     Name    = "${var.project_name}-mcp-server"
