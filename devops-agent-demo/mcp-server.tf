@@ -141,7 +141,7 @@ resource "aws_instance" "mcp_server" {
     set -ex
 
     # Install Python 3.12 + pip + nginx
-    dnf install -y python3.12 python3.12-pip nginx
+    dnf install -y python3.12 python3.12-pip nginx openssl
 
     # Install opensearch-mcp-server-py
     python3.12 -m pip install opensearch-mcp-server-py
@@ -149,10 +149,20 @@ resource "aws_instance" "mcp_server" {
     # Store the API key
     MCP_API_KEY="${random_password.mcp_api_key[0].result}"
 
-    # Configure nginx as API key auth proxy on port 8080 -> MCP on 8081
+    # Generate self-signed TLS cert
+    mkdir -p /etc/nginx/ssl
+    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+      -keyout /etc/nginx/ssl/mcp.key \
+      -out /etc/nginx/ssl/mcp.crt \
+      -subj "/CN=mcp-server/O=devops-agent-demo"
+
+    # Configure nginx as HTTPS API key auth proxy on port 8080 -> MCP on 8081
     cat > /etc/nginx/conf.d/mcp-proxy.conf <<NGINX
     server {
-        listen 8080;
+        listen 8080 ssl;
+        ssl_certificate /etc/nginx/ssl/mcp.crt;
+        ssl_certificate_key /etc/nginx/ssl/mcp.key;
+        ssl_protocols TLSv1.2 TLSv1.3;
 
         location / {
             # Validate API key header
