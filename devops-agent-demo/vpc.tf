@@ -52,6 +52,13 @@ resource "aws_security_group" "vpc_endpoints" {
     cidr_blocks = [aws_vpc.main.cidr_block]
   }
 
+  ingress {
+    from_port   = 5432
+    to_port     = 5432
+    protocol    = "tcp"
+    cidr_blocks = [aws_vpc.main.cidr_block]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -90,6 +97,7 @@ locals {
     ssm            = "com.amazonaws.${var.region}.ssm"
     secretsmanager = "com.amazonaws.${var.region}.secretsmanager"
     dsql           = "com.amazonaws.${var.region}.dsql"
+    dsql-data      = "com.amazonaws.${var.region}.dsql-fnh4"
     aoss           = "com.amazonaws.${var.region}.aoss"
   }
 }
@@ -109,7 +117,7 @@ resource "aws_vpc_endpoint" "interface" {
   service_name        = each.value
   vpc_endpoint_type   = "Interface"
   private_dns_enabled = true
-  subnet_ids          = each.key == "aoss" ? local.aoss_supported_subnet_ids : aws_subnet.private[*].id
+  subnet_ids          = contains(["aoss"], each.key) ? local.aoss_supported_subnet_ids : aws_subnet.private[*].id
   security_group_ids  = [aws_security_group.vpc_endpoints.id]
 
   tags = {

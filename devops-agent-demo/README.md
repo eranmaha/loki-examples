@@ -1,46 +1,67 @@
 # DevOps Agent Demo
 
-Serverless application demonstrating automated incident detection and remediation with AWS DevOps Agent.
+Serverless application demonstrating automated incident detection and remediation with AWS DevOps Agent, featuring OpenSearch MCP Server integration for private subnet connectivity.
 
 ## Architecture
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌────────────────┐     ┌──────────────────┐
-│  CloudFront │────▶│ API Gateway  │────▶│  Lambda (App)  │────▶│  Aurora DSQL     │
-└─────────────┘     └──────────────┘     └────────────────┘     └──────────────────┘
-                           │                      │
-                           │                      ▼
-                           │              ┌────────────────────┐
-                           │              │ OpenSearch          │
-                           │              │ Serverless (AOSS)  │
-                           │              │ • app-transactions  │
-                           │              │ • app-errors        │
-                           │              └────────────────────┘
-                           │
-                    ┌──────────────┐
-                    │   Injector   │
-                    │   Lambda     │
-                    └──────────────┘
-
-┌────────────────┐     ┌─────────┐     ┌────────────────┐     ┌──────────────────┐
-│ CloudWatch     │────▶│   SNS   │────▶│ Webhook Bridge │────▶│  DevOps Agent    │
-│ Alarms         │     └─────────┘     │    Lambda      │     │  (Frontier)      │
-└────────────────┘                     └────────────────┘     └──────────────────┘
-
-┌─────────────────────────────────────────────────────────┐
-│  VPC (Private Subnets, No NAT)                         │
-│  VPC Endpoints: DSQL, AOSS, SSM, Logs, S3, Secrets    │
-│  Lambda functions run inside VPC                       │
-└─────────────────────────────────────────────────────────┘
+                                    ┌─────────────────────────────────────────────┐
+                                    │         OUTSIDE VPC (Internet)              │
+┌──────────┐   ┌────────────┐      │                                             │
+│   User   │──▶│ CloudFront │──▶ API Gateway ──▶ App Lambda ──▶ Aurora DSQL      │
+└──────────┘   └────────────┘      │                 │                            │
+                                    │                 │ async invoke               │
+                                    │                 ▼                            │
+                                    │          Injector Lambda                     │
+                                    │          (fault injection)                   │
+                                    └─────────────────────────────────────────────┘
+                                                      │
+                                                      │ Lambda:InvokeFunction (async)
+                                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  VPC (Private Subnets, No NAT)                                                  │
+│  VPC Endpoints: AOSS, DSQL, SSM, Logs, Secrets Manager, S3                     │
+│                                                                                  │
+│  ┌─────────────────────┐         ┌──────────────────────────┐                  │
+│  │ OpenSearch Logger    │────────▶│  OpenSearch Serverless    │                  │
+│  │ Lambda (Node.js)    │  SigV4  │  (TIMESERIES Collection)  │                  │
+│  └─────────────────────┘         │  • app-transactions       │                  │
+│                                   │  • app-errors             │                  │
+│  ┌─────────────────────┐         │                           │                  │
+│  │ MCP Server Lambda   │────────▶│                           │                  │
+│  │ (Python, Streamable │  SigV4  └──────────────────────────┘                  │
+│  │  HTTP via Func URL) │                                                        │
+│  └─────────────────────┘                                                        │
+└─────────────────────────────────────────────────────────────────────────────────┘
+        ▲                                              ▲
+        │ MCP Protocol                                 │
+        │ (Streamable HTTP)                            │
+        │                                              │
+┌───────┴──────────┐     ┌─────────┐     ┌────────────┴───────┐
+│  DevOps Agent    │◀────│   SNS   │◀────│  CloudWatch Alarms │
+│  (Frontier AI)   │     └─────────┘     └────────────────────┘
+│                  │           ▲
+│  Investigates +  │     ┌─────┴──────┐
+│  Remediates      │     │  Webhook   │
+└──────────────────┘     │  Bridge    │
+                         └────────────┘
 ```
+
+## Key Design Decisions
+
+- **Dual-function approach**: App Lambda stays outside VPC (DSQL has no data-plane VPC endpoint), OpenSearch access is fully private via VPC-based Logger Lambda
+- **No NAT Gateway**: All VPC-based Lambdas access AWS services through VPC endpoints only
+- **Async logging**: App Lambda invokes Logger asynchronously (fire-and-forget) — zero latency impact on user requests
+- **MCP Server in VPC**: DevOps Agent queries OpenSearch through the MCP protocol over a Lambda Function URL, keeping data plane fully private
 
 ## Prerequisites
 
 - Terraform >= 1.5
 - AWS CLI configured with appropriate credentials
 - Node.js 20+ (for local Lambda development)
+- Python 3.12+ (for MCP server packaging)
 - Access to Aurora DSQL cluster
-- DevOps Agent webhook secret
+- DevOps Agent space + webhook secret
 
 ## Setup
 
@@ -51,20 +72,34 @@ cd lambda && npm install && cd ..
 # Initialize Terraform
 terraform init
 
-# Set webhook secret (don't commit this!)
-export TF_VAR_webhook_secret="your-secret-here"
+# Configure variables (edit terraform.tfvars)
+# Required: devops_agent_webhook_url, webhook_secret, dsql_cluster_endpoint, dsql_cluster_arn
 
-# Plan and apply
-terraform plan
-terraform apply
+# Deploy
+terraform apply -var="webhook_secret=YOUR_SECRET"
 ```
+
+## Configuration (terraform.tfvars)
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `region` | AWS region | `us-east-1` |
+| `account_id` | AWS account ID | `033216807884` |
+| `project_name` | Resource name prefix | `devops-agent-demo` |
+| `dsql_cluster_endpoint` | DSQL cluster hostname | `xxx.dsql.us-east-1.on.aws` |
+| `dsql_cluster_arn` | DSQL cluster ARN | `arn:aws:dsql:...` |
+| `devops_agent_webhook_url` | DevOps Agent webhook | `https://event-ai...` |
+| `webhook_secret` | HMAC signing key (sensitive) | — |
+| `devops_agent_space_id` | Agent space ID | `e8246657-...` |
+| `enable_mcp_server` | Deploy MCP server | `true` |
+| `mcp_server_auth_type` | Function URL auth | `AWS_IAM` or `NONE` |
 
 ## How to Demo
 
 ### Normal Operation
-1. Open the CloudFront URL (output: `cloudfront_url`)
-2. Click "Fetch Data" — app queries DSQL and logs to OpenSearch
-3. Use "Auto-Fetch" for continuous traffic
+1. Open the CloudFront URL (output: `test_page_url`)
+2. Click "Fetch Data" — app queries DSQL, logs transaction to OpenSearch (async)
+3. Use "Auto-Fetch" for continuous traffic generation
 
 ### Fault Injection Scenarios
 
@@ -80,64 +115,15 @@ terraform apply
 2. Inject a fault (e.g., "Inject Business Logic Error")
 3. Watch errors appear in the event log
 4. DevOps Agent receives alarm via webhook
-5. Agent uses skills to investigate and remediate
-6. Click "Restore App Errors" to clear faults
-
-## Fault Injection Guide
-
-### Infrastructure Faults
-- **Remove DSQL Permission**: Deletes IAM inline policy → immediate DB failures
-- **Inject Timeout**: Sets SSM param to 20s sleep → Lambda timeout (15s limit)
-
-### Application Faults
-- **Data Corruption**: Sets SSM flag → writes wrong field types to OpenSearch `app-transactions`
-- **Business Logic Error**: Sets SSM flag → simulates invalid state transitions, logs to `app-errors`
-
-### Restoration
-- **Restore DSQL**: Re-attaches IAM policy
-- **Restore Timeout**: Resets sleep param to 0
-- **Restore App Errors**: Clears both corruption and business logic flags
-
-## OpenSearch Indexes
-
-### app-transactions
-Logs every successful `/data` request:
-```json
-{
-  "@timestamp": "2025-01-01T00:00:00Z",
-  "request_path": "/data",
-  "status": 200,
-  "duration_ms": 45,
-  "dsql_rows_returned": 10
-}
-```
-
-### app-errors
-Logs application-level errors:
-```json
-{
-  "@timestamp": "2025-01-01T00:00:00Z",
-  "error_type": "business_logic|data_corruption|infrastructure",
-  "message": "Description of error",
-  "severity": "ERROR|WARNING|CRITICAL",
-  "context": {}
-}
-```
+5. Agent connects to OpenSearch MCP Server (private subnet)
+6. Agent queries `app-errors` index, categorizes the issue, provides remediation
+7. Click "Restore App Errors" to clear faults
 
 ## OpenSearch MCP Server
 
-The project includes an OpenSearch MCP Server deployed as a Lambda function, enabling DevOps Agent to query OpenSearch indexes using the Model Context Protocol.
-
-### How It Works
-
-- **Package**: [`opensearch-mcp-server-py`](https://github.com/opensearch-project/opensearch-mcp-server-py) from PyPI
-- **Transport**: Streamable HTTP (served via Lambda Function URL)
-- **Auth to OpenSearch**: IAM (SigV4) via the Lambda execution role
-- **Available Tools**: ListIndexTool, SearchIndexTool, IndexMappingTool, ClusterHealthTool, CountTool
+Deploys the [opensearch-mcp-server-py](https://github.com/opensearch-project/opensearch-mcp-server-py) as a Lambda behind a Function URL. DevOps Agent connects to it using the MCP protocol to query logs in the private OpenSearch collection.
 
 ### Connecting DevOps Agent
-
-The MCP server endpoint is output as `mcp_server_function_url`. Configure DevOps Agent to connect:
 
 ```json
 {
@@ -150,26 +136,82 @@ The MCP server endpoint is output as `mcp_server_function_url`. Configure DevOps
 }
 ```
 
-If using `AWS_IAM` auth (default), the caller must sign requests with SigV4 for the `lambda` service.
+If using `AWS_IAM` auth (default), sign requests with SigV4 for the `lambda` service.
 
-To disable the MCP server: `terraform apply -var='enable_mcp_server=false'`
+### Available MCP Tools
+- `ListIndexTool` — List all indexes
+- `SearchIndexTool` — Query with DSL
+- `IndexMappingTool` — Get index mappings
+- `ClusterHealthTool` — Cluster status
+- `CountTool` — Document counts
+
+## OpenSearch Indexes
+
+### app-transactions
+```json
+{
+  "@timestamp": "2025-01-01T00:00:00Z",
+  "request_path": "/data",
+  "status": 200,
+  "duration_ms": 45,
+  "dsql_rows_returned": 10
+}
+```
+
+### app-errors
+```json
+{
+  "@timestamp": "2025-01-01T00:00:00Z",
+  "error_type": "business_logic|data_corruption|infrastructure",
+  "message": "Description of error",
+  "severity": "ERROR|WARNING|CRITICAL",
+  "context": {}
+}
+```
 
 ## Project Structure
 
 ```
-├── main.tf           # Core infrastructure (Lambda, API GW, CloudWatch, SNS)
-├── vpc.tf            # VPC, subnets, VPC endpoints
-├── opensearch.tf     # OpenSearch Serverless collection & policies
-├── mcp-server.tf     # OpenSearch MCP Server Lambda + Function URL
-├── terraform.tfvars  # Variable values
+├── main.tf                # Core infra (Lambdas, API GW, CloudWatch, SNS)
+├── vpc.tf                 # VPC, subnets, VPC endpoints (no NAT)
+├── opensearch.tf          # OpenSearch Serverless collection & access policies
+├── mcp-server.tf          # MCP Server Lambda + Function URL
+├── terraform.tfvars       # Variable values (account-specific)
 ├── lambda/
-│   ├── index.js      # App Lambda (DSQL + OpenSearch)
-│   ├── injector.js   # Fault injection Lambda
-│   └── webhook-bridge.js  # SNS → DevOps Agent webhook
+│   ├── index.js           # App Lambda — DSQL queries + async logger invoke
+│   ├── opensearch-logger.js  # Logger Lambda (VPC) — writes to AOSS
+│   ├── injector.js        # Fault injection (IAM/SSM manipulation)
+│   ├── webhook-bridge.js  # SNS → DevOps Agent HMAC webhook
+│   └── package.json
 ├── mcp-server/
-│   ├── handler.py    # MCP Server Lambda handler (Mangum + opensearch-mcp-server-py)
+│   ├── handler.py         # Mangum ASGI adapter for opensearch-mcp-server-py
 │   └── requirements.txt
-└── skills/
-    ├── investigate-app-failure.md
-    └── investigate-opensearch-app-errors.md
+├── skills/
+│   ├── investigate-app-failure.md          # Infra error investigation skill
+│   └── investigate-opensearch-app-errors.md # Applicative error skill
+└── docs/
+    └── solution-architecture.drawio        # Full architecture diagram
 ```
+
+## Outputs
+
+| Output | Description |
+|--------|-------------|
+| `cloudfront_url` | App frontend URL |
+| `test_page_url` | Direct link to test page |
+| `api_url` | API Gateway endpoint |
+| `opensearch_endpoint` | AOSS collection URL |
+| `mcp_server_function_url` | MCP Server endpoint |
+| `mcp_server_function_name` | MCP Server Lambda name |
+| `lambda_function_name` | App Lambda name |
+| `alarm_error_rate` | Error rate alarm name |
+| `alarm_timeout` | Timeout alarm name |
+
+## Deploying to Another Account
+
+1. Create a DSQL cluster in the target account
+2. Set up a DevOps Agent space + webhook
+3. Update `terraform.tfvars` with new values
+4. `terraform init && terraform apply -var="webhook_secret=..."`
+
+The architecture is fully parameterized — no hardcoded account IDs or ARNs.
