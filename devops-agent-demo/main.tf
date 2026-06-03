@@ -551,7 +551,7 @@ resource "aws_iam_role_policy" "logger_policy" {
 
 data "archive_file" "logger_zip" {
   type        = "zip"
-  source_file = "${path.module}/lambda/opensearch-logger.js"
+  source_dir  = "${path.module}/lambda"
   output_path = "${path.module}/.build/opensearch-logger.zip"
 }
 
