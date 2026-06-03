@@ -43,6 +43,7 @@ resource "null_resource" "mcp_server_package" {
       pip install opensearch-mcp-server-py \
         -t ${path.module}/.build/mcp-pkg/ \
         --platform manylinux2014_aarch64 \
+        --platform any \
         --only-binary=:all: \
         --python-version 3.12 \
         --implementation cp
