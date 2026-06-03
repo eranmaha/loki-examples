@@ -28,9 +28,9 @@ Serverless application demonstrating automated incident detection and remediatio
 │  └─────────────────────┘         │  • app-transactions       │                  │
 │                                   │  • app-errors             │                  │
 │  ┌─────────────────────┐         │                           │                  │
-│  │ MCP Server Lambda   │────────▶│                           │                  │
-│  │ (Python, Streamable │  SigV4  └──────────────────────────┘                  │
-│  │  HTTP via Func URL) │                                                        │
+│  │ MCP Server EC2      │────────▶│                           │                  │
+│  │ (t4g.small, arm64)  │  SigV4  └──────────────────────────┘                  │
+│  │ Private IP:8080     │                                                        │
 │  └─────────────────────┘                                                        │
 └─────────────────────────────────────────────────────────────────────────────────┘
         ▲                                              ▲
@@ -52,14 +52,14 @@ Serverless application demonstrating automated incident detection and remediatio
 - **Dual-function approach**: App Lambda stays outside VPC (DSQL has no data-plane VPC endpoint), OpenSearch access is fully private via VPC-based Logger Lambda
 - **No NAT Gateway**: All VPC-based Lambdas access AWS services through VPC endpoints only
 - **Async logging**: App Lambda invokes Logger asynchronously (fire-and-forget) — zero latency impact on user requests
-- **MCP Server in VPC**: DevOps Agent queries OpenSearch through the MCP protocol over a Lambda Function URL, keeping data plane fully private
+- **MCP Server in VPC**: DevOps Agent queries OpenSearch through the MCP protocol via an EC2 instance (t4g.small) on port 8080, keeping data plane fully private
 
 ## Prerequisites
 
 - Terraform >= 1.5
 - AWS CLI configured with appropriate credentials
 - Node.js 20+ (for local Lambda development)
-- Python 3.12+ (for MCP server packaging)
+
 - Access to Aurora DSQL cluster
 - DevOps Agent space + webhook secret
 
@@ -91,8 +91,7 @@ terraform apply -var="webhook_secret=YOUR_SECRET"
 | `devops_agent_webhook_url` | DevOps Agent webhook | `https://event-ai...` |
 | `webhook_secret` | HMAC signing key (sensitive) | — |
 | `devops_agent_space_id` | Agent space ID | `e8246657-...` |
-| `enable_mcp_server` | Deploy MCP server | `true` |
-| `mcp_server_auth_type` | Function URL auth | `AWS_IAM` or `NONE` |
+| `enable_mcp_server` | Deploy MCP server EC2 | `true` |
 
 ## How to Demo
 
@@ -107,16 +106,14 @@ After `terraform apply` completes, configure the DevOps Agent to connect to your
      - VPC: Select the VPC created by Terraform (`devops-agent-demo-vpc`)
      - Subnets: Select the private subnets
      - Security Group: Select `devops-agent-demo-vpce-sg`
-   - Note: If your MCP server Function URL auth is `NONE`, you can skip the private connection and use a public connection instead (the Lambda Function URL is internet-accessible, while OpenSearch remains private behind the VPC)
 
 2. **Register the MCP Server** (console)
    - Go to the DevOps Agent console → your space → Tools → MCP Servers
    - Add a new MCP server:
      - Name: `opensearch-logs`
-     - URL: `<mcp_server_function_url>/mcp` (from Terraform output)
+     - URL: `http://<mcp_server_private_ip>:8080/mcp` (from Terraform output `mcp_server_host_address`)
      - Transport: Streamable HTTP
-     - Connection: Select the private connection from step 1 (or public if using `NONE` auth)
-     - Auth: AWS IAM SigV4 (if `mcp_server_auth_type = AWS_IAM`)
+     - Connection: Select the private connection from step 1
 
 3. **Upload Investigation Skills** (console)
    - Go to the DevOps Agent console → your space → Skills
@@ -153,7 +150,7 @@ After `terraform apply` completes, configure the DevOps Agent to connect to your
 
 ## OpenSearch MCP Server
 
-Deploys the [opensearch-mcp-server-py](https://github.com/opensearch-project/opensearch-mcp-server-py) as a Lambda behind a Function URL. DevOps Agent connects to it using the MCP protocol to query logs in the private OpenSearch collection.
+Deploys the [opensearch-mcp-server-py](https://github.com/opensearch-project/opensearch-mcp-server-py) on an EC2 instance (t4g.small, arm64) in a private subnet. DevOps Agent connects via a private VPC connection on port 8080.
 
 ### Connecting DevOps Agent
 
@@ -161,14 +158,12 @@ Deploys the [opensearch-mcp-server-py](https://github.com/opensearch-project/ope
 {
   "mcpServers": {
     "opensearch": {
-      "url": "<mcp_server_function_url>/mcp",
+      "url": "http://<mcp_server_private_ip>:8080/mcp",
       "transport": "streamable-http"
     }
   }
 }
 ```
-
-If using `AWS_IAM` auth (default), sign requests with SigV4 for the `lambda` service.
 
 ### Available MCP Tools
 - `ListIndexTool` — List all indexes
@@ -207,7 +202,7 @@ If using `AWS_IAM` auth (default), sign requests with SigV4 for the `lambda` ser
 ├── main.tf                # Core infra (Lambdas, API GW, CloudWatch, SNS)
 ├── vpc.tf                 # VPC, subnets, VPC endpoints (no NAT)
 ├── opensearch.tf          # OpenSearch Serverless collection & access policies
-├── mcp-server.tf          # MCP Server Lambda + Function URL
+├── mcp-server.tf          # MCP Server EC2 instance + IAM + Security Group
 ├── terraform.tfvars       # Variable values (account-specific)
 ├── lambda/
 │   ├── index.js           # App Lambda — DSQL queries + async logger invoke
@@ -215,9 +210,7 @@ If using `AWS_IAM` auth (default), sign requests with SigV4 for the `lambda` ser
 │   ├── injector.js        # Fault injection (IAM/SSM manipulation)
 │   ├── webhook-bridge.js  # SNS → DevOps Agent HMAC webhook
 │   └── package.json
-├── mcp-server/
-│   ├── handler.py         # Mangum ASGI adapter for opensearch-mcp-server-py
-│   └── requirements.txt
+
 ├── skills/
 │   ├── investigate-app-failure.md          # Infra error investigation skill
 │   └── investigate-opensearch-app-errors.md # Applicative error skill
@@ -233,8 +226,8 @@ If using `AWS_IAM` auth (default), sign requests with SigV4 for the `lambda` ser
 | `test_page_url` | Direct link to test page |
 | `api_url` | API Gateway endpoint |
 | `opensearch_endpoint` | AOSS collection URL |
-| `mcp_server_function_url` | MCP Server endpoint |
-| `mcp_server_function_name` | MCP Server Lambda name |
+| `mcp_server_private_ip` | MCP Server EC2 private IP |
+| `mcp_server_host_address` | MCP Server endpoint (ip:8080) |
 | `lambda_function_name` | App Lambda name |
 | `alarm_error_rate` | Error rate alarm name |
 | `alarm_timeout` | Timeout alarm name |

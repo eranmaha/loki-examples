@@ -1,52 +1,15 @@
-# ─── OpenSearch MCP Server Lambda ────────────────────────────────────────────
+# ─── OpenSearch MCP Server EC2 ────────────────────────────────────────────────
 
 variable "enable_mcp_server" {
-  description = "Deploy the OpenSearch MCP Server Lambda"
+  description = "Deploy the OpenSearch MCP Server EC2 instance"
   type        = bool
   default     = true
 }
 
-variable "mcp_server_auth_type" {
-  description = "Function URL auth type (AWS_IAM or NONE)"
-  type        = string
-  default     = "AWS_IAM"
-}
+# ─── AMI Lookup ──────────────────────────────────────────────────────────────
 
-# ─── Build the deployment package ────────────────────────────────────────────
-
-resource "null_resource" "mcp_server_build" {
-  count = var.enable_mcp_server ? 1 : 0
-
-  triggers = {
-    requirements = filemd5("${path.module}/mcp-server/requirements.txt")
-    handler      = filemd5("${path.module}/mcp-server/handler.py")
-  }
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      rm -rf ${path.module}/.build/mcp-server
-      mkdir -p ${path.module}/.build/mcp-server
-      pip install -r ${path.module}/mcp-server/requirements.txt \
-        -t ${path.module}/.build/mcp-server \
-        --platform manylinux2014_aarch64 \
-        --implementation cp \
-        --python-version 3.12 \
-        --only-binary=:all: \
-        --quiet 2>/dev/null || \
-      pip install -r ${path.module}/mcp-server/requirements.txt \
-        -t ${path.module}/.build/mcp-server \
-        --quiet
-      cp ${path.module}/mcp-server/handler.py ${path.module}/.build/mcp-server/
-    EOT
-  }
-}
-
-data "archive_file" "mcp_server_zip" {
-  count       = var.enable_mcp_server ? 1 : 0
-  type        = "zip"
-  source_dir  = "${path.module}/.build/mcp-server"
-  output_path = "${path.module}/.build/mcp-server.zip"
-  depends_on  = [null_resource.mcp_server_build]
+data "aws_ssm_parameter" "al2023_arm64" {
+  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64"
 }
 
 # ─── IAM Role ────────────────────────────────────────────────────────────────
@@ -60,7 +23,7 @@ resource "aws_iam_role" "mcp_server_role" {
     Statement = [{
       Action    = "sts:AssumeRole"
       Effect    = "Allow"
-      Principal = { Service = "lambda.amazonaws.com" }
+      Principal = { Service = "ec2.amazonaws.com" }
     }]
   })
 
@@ -77,79 +40,120 @@ resource "aws_iam_role_policy" "mcp_server_policy" {
     Statement = [
       {
         Effect   = "Allow"
-        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
-        Resource = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:*"
+        Action   = ["aoss:APIAccessAll"]
+        Resource = "arn:aws:aoss:${var.region}:${var.account_id}:collection/*"
       },
       {
         Effect = "Allow"
         Action = [
-          "ec2:CreateNetworkInterface",
-          "ec2:DescribeNetworkInterfaces",
-          "ec2:DeleteNetworkInterface"
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
         ]
-        Resource = "*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["aoss:APIAccessAll"]
-        Resource = "arn:aws:aoss:${var.region}:${var.account_id}:collection/*"
+        Resource = "arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:*"
       }
     ]
   })
 }
 
-# ─── Lambda Function ─────────────────────────────────────────────────────────
-
-resource "aws_lambda_function" "mcp_server" {
-  count            = var.enable_mcp_server ? 1 : 0
-  function_name    = "${var.project_name}-mcp-server"
-  role             = aws_iam_role.mcp_server_role[0].arn
-  handler          = "handler.handler"
-  runtime          = "python3.12"
-  architectures    = ["arm64"]
-  timeout          = 30
-  memory_size      = 256
-  filename         = data.archive_file.mcp_server_zip[0].output_path
-  source_code_hash = data.archive_file.mcp_server_zip[0].output_base64sha256
-
-  vpc_config {
-    subnet_ids         = aws_subnet.private[*].id
-    security_group_ids = [aws_security_group.lambda.id]
-  }
-
-  environment {
-    variables = {
-      OPENSEARCH_URL           = aws_opensearchserverless_collection.logs.collection_endpoint
-      OPENSEARCH_IS_SERVERLESS = "true"
-      AWS_REGION_NAME          = var.region
-    }
-  }
-
-  tags = { Project = var.project_name }
+resource "aws_iam_role_policy_attachment" "mcp_server_ssm" {
+  count      = var.enable_mcp_server ? 1 : 0
+  role       = aws_iam_role.mcp_server_role[0].name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-resource "aws_cloudwatch_log_group" "mcp_server_logs" {
-  count             = var.enable_mcp_server ? 1 : 0
-  name              = "/aws/lambda/${var.project_name}-mcp-server"
-  retention_in_days = 7
-  tags              = { Project = var.project_name }
+resource "aws_iam_instance_profile" "mcp_server" {
+  count = var.enable_mcp_server ? 1 : 0
+  name  = "${var.project_name}-mcp-server"
+  role  = aws_iam_role.mcp_server_role[0].name
 }
 
-# ─── Function URL ────────────────────────────────────────────────────────────
+# ─── Security Group ─────────────────────────────────────────────────────────
 
-resource "aws_lambda_function_url" "mcp_server" {
-  count              = var.enable_mcp_server ? 1 : 0
-  function_name      = aws_lambda_function.mcp_server[0].function_name
-  authorization_type = var.mcp_server_auth_type
+resource "aws_security_group" "mcp_server" {
+  count       = var.enable_mcp_server ? 1 : 0
+  name        = "${var.project_name}-mcp-server"
+  description = "MCP Server EC2 - inbound 8080 from VPC"
+  vpc_id      = aws_vpc.main.id
 
-  cors {
-    allow_origins = ["*"]
-    allow_methods = ["POST", "GET", "DELETE"]
-    allow_headers = ["*"]
+  ingress {
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = [aws_vpc.main.cidr_block]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name    = "${var.project_name}-mcp-server"
+    Project = var.project_name
   }
 }
 
-# ─── AOSS Data Access Policy (add MCP server role) ──────────────────────────
+# ─── EC2 Instance ────────────────────────────────────────────────────────────
+
+resource "aws_instance" "mcp_server" {
+  count                  = var.enable_mcp_server ? 1 : 0
+  ami                    = data.aws_ssm_parameter.al2023_arm64.value
+  instance_type          = "t4g.small"
+  subnet_id              = aws_subnet.private[0].id
+  iam_instance_profile   = aws_iam_instance_profile.mcp_server[0].name
+  vpc_security_group_ids = [aws_security_group.mcp_server[0].id]
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+  }
+
+  user_data = base64encode(<<-EOF
+    #!/bin/bash
+    set -ex
+
+    # Install Python 3.12 + pip
+    dnf install -y python3.12 python3.12-pip
+
+    # Install opensearch-mcp-server-py
+    python3.12 -m pip install opensearch-mcp-server-py
+
+    # Create systemd service
+    cat > /etc/systemd/system/mcp-server.service <<'UNIT'
+    [Unit]
+    Description=OpenSearch MCP Server (Streamable HTTP)
+    After=network.target
+
+    [Service]
+    Type=simple
+    Environment=OPENSEARCH_URL=${aws_opensearchserverless_collection.logs.collection_endpoint}
+    Environment=OPENSEARCH_AUTH=iam
+    Environment=OPENSEARCH_IS_SERVERLESS=true
+    Environment=OPENSEARCH_REGION=us-east-1
+    ExecStart=/usr/local/bin/opensearch-mcp-server-py --transport streamable-http --port 8080 --host 0.0.0.0
+    Restart=always
+    RestartSec=5
+
+    [Install]
+    WantedBy=multi-user.target
+    UNIT
+
+    systemctl daemon-reload
+    systemctl enable --now mcp-server
+  EOF
+  )
+
+  tags = {
+    Name    = "${var.project_name}-mcp-server"
+    Project = var.project_name
+  }
+}
+
+# ─── AOSS Data Access Policy (MCP server role) ──────────────────────────────
 
 resource "aws_opensearchserverless_access_policy" "mcp_data" {
   count = var.enable_mcp_server ? 1 : 0
@@ -178,12 +182,12 @@ resource "aws_opensearchserverless_access_policy" "mcp_data" {
 
 # ─── Outputs ─────────────────────────────────────────────────────────────────
 
-output "mcp_server_function_url" {
-  value       = var.enable_mcp_server ? aws_lambda_function_url.mcp_server[0].function_url : ""
-  description = "OpenSearch MCP Server endpoint (Streamable HTTP)"
+output "mcp_server_private_ip" {
+  value       = var.enable_mcp_server ? aws_instance.mcp_server[0].private_ip : ""
+  description = "OpenSearch MCP Server EC2 private IP"
 }
 
-output "mcp_server_function_name" {
-  value       = var.enable_mcp_server ? aws_lambda_function.mcp_server[0].function_name : ""
-  description = "MCP Server Lambda function name"
+output "mcp_server_host_address" {
+  value       = var.enable_mcp_server ? "${aws_instance.mcp_server[0].private_ip}:8080" : ""
+  description = "OpenSearch MCP Server endpoint (Streamable HTTP)"
 }

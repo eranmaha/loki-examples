@@ -40,8 +40,8 @@
           <mxGeometry x="530" y="560" width="60" height="60" as="geometry" />
         </mxCell>
 
-        <!-- MCP Server Lambda -->
-        <mxCell id="mcp-lambda" value="&lt;b&gt;MCP Server Lambda&lt;/b&gt;&lt;br&gt;(Python 3.12, arm64)&lt;br&gt;opensearch-mcp-server-py&lt;br&gt;Streamable HTTP" style="outlineConnect=0;fontColor=#FFFFFF;gradientColor=none;fillColor=#ED7100;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.lambda_function;" vertex="1" parent="1">
+        <!-- MCP Server EC2 -->
+        <mxCell id="mcp-lambda" value="&lt;b&gt;MCP Server EC2&lt;/b&gt;&lt;br&gt;(t4g.small, arm64)&lt;br&gt;opensearch-mcp-server-py&lt;br&gt;Private IP:8080" style="outlineConnect=0;fontColor=#FFFFFF;gradientColor=none;fillColor=#ED7100;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;" vertex="1" parent="1">
           <mxGeometry x="530" y="730" width="60" height="60" as="geometry" />
         </mxCell>
 
@@ -75,12 +75,10 @@
           <mxGeometry x="160" y="430" width="50" height="50" as="geometry" />
         </mxCell>
 
-        <!-- Lambda Function URL -->
-        <mxCell id="func-url" value="&lt;b&gt;Lambda&lt;br&gt;Function URL&lt;/b&gt;&lt;br&gt;(MCP Endpoint)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1C2128;strokeColor=#ED7100;fontColor=#FFFFFF;fontSize=10;verticalAlign=middle;align=center;" vertex="1" parent="1">
-          <mxGeometry x="280" y="740" width="110" height="60" as="geometry" />
+        <!-- DevOps Agent → MCP EC2 (private connection) -->
+        <mxCell id="e9" value="&lt;font color=&quot;#FF9900&quot;&gt;MCP Connection&lt;br&gt;(EC2 Private IP:8080)&lt;/font&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=0.5;exitY=1;entryX=0;entryY=0.5;strokeColor=#FF9900;fontColor=#FF9900;fontSize=10;fontStyle=1;strokeWidth=2;dashed=1;" edge="1" source="devops-agent" target="mcp-lambda" parent="1">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
-        <!-- SNS -->
         <mxCell id="sns" value="&lt;b&gt;SNS&lt;/b&gt;&lt;br&gt;(Alerts)" style="outlineConnect=0;fontColor=#FFFFFF;gradientColor=none;fillColor=#E7157B;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sns;" vertex="1" parent="1">
           <mxGeometry x="1050" y="140" width="50" height="50" as="geometry" />
         </mxCell>
@@ -141,15 +139,6 @@
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
 
-        <!-- Function URL → MCP Lambda -->
-        <mxCell id="e8" value="&lt;font color=&quot;#8B949E&quot;&gt;MCP Protocol&lt;br&gt;(Streamable HTTP)&lt;/font&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;entryX=0;entryY=0.5;strokeColor=#ED7100;fontColor=#8B949E;fontSize=9;" edge="1" source="func-url" target="mcp-lambda" parent="1">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-
-        <!-- DevOps Agent → Function URL (MCP connection) -->
-        <mxCell id="e9" value="&lt;font color=&quot;#FF9900&quot;&gt;MCP Connection&lt;br&gt;(Private Subnet)&lt;/font&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=0.5;exitY=1;entryX=0.5;entryY=0;strokeColor=#FF9900;fontColor=#FF9900;fontSize=10;fontStyle=1;strokeWidth=2;dashed=1;" edge="1" source="devops-agent" target="func-url" parent="1">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
 
         <!-- CW Alarms → SNS -->
         <mxCell id="e10" value="&lt;font color=&quot;#8B949E&quot;&gt;ALARM&lt;/font&gt;" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;entryX=0;entryY=0.5;strokeColor=#E7157B;fontColor=#8B949E;fontSize=9;" edge="1" source="cw-alarms" target="sns" parent="1">
