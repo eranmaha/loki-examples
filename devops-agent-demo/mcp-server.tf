@@ -96,6 +96,30 @@ resource "aws_security_group" "mcp_server" {
   }
 }
 
+# ─── MCP Server API Key ──────────────────────────────────────────────────────
+
+resource "random_password" "mcp_api_key" {
+  count   = var.enable_mcp_server ? 1 : 0
+  length  = 32
+  special = false
+}
+
+resource "aws_secretsmanager_secret" "mcp_api_key" {
+  count = var.enable_mcp_server ? 1 : 0
+  name  = "${var.project_name}/mcp-api-key"
+  tags  = { Project = var.project_name }
+}
+
+resource "aws_secretsmanager_secret_version" "mcp_api_key" {
+  count         = var.enable_mcp_server ? 1 : 0
+  secret_id     = aws_secretsmanager_secret.mcp_api_key[0].id
+  secret_string = random_password.mcp_api_key[0].result
+
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
+}
+
 # ─── EC2 Instance ────────────────────────────────────────────────────────────
 
 resource "aws_instance" "mcp_server" {
@@ -116,13 +140,46 @@ resource "aws_instance" "mcp_server" {
     #!/bin/bash
     set -ex
 
-    # Install Python 3.12 + pip
-    dnf install -y python3.12 python3.12-pip
+    # Install Python 3.12 + pip + nginx
+    dnf install -y python3.12 python3.12-pip nginx
 
     # Install opensearch-mcp-server-py
     python3.12 -m pip install opensearch-mcp-server-py
 
-    # Create systemd service
+    # Store the API key
+    MCP_API_KEY="${random_password.mcp_api_key[0].result}"
+
+    # Configure nginx as API key auth proxy on port 8080 -> MCP on 8081
+    cat > /etc/nginx/conf.d/mcp-proxy.conf <<NGINX
+    server {
+        listen 8080;
+
+        location / {
+            # Validate API key header
+            if (\$http_x_api_key != "$MCP_API_KEY") {
+                return 401 '{"error": "Unauthorized"}';  
+            }
+
+            proxy_pass http://127.0.0.1:8081;
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade \$http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_read_timeout 300s;
+        }
+    }
+    NGINX
+
+    # Remove default nginx server block
+    rm -f /etc/nginx/conf.d/default.conf
+    sed -i '/server {/,/^}/d' /etc/nginx/nginx.conf 2>/dev/null || true
+
+    # Start nginx
+    systemctl enable --now nginx
+
+    # Create systemd service for MCP server on port 8081 (behind nginx)
     cat > /etc/systemd/system/mcp-server.service <<'UNIT'
     [Unit]
     Description=OpenSearch MCP Server (Streamable HTTP)
@@ -134,7 +191,7 @@ resource "aws_instance" "mcp_server" {
     Environment=OPENSEARCH_AUTH=iam
     Environment=OPENSEARCH_IS_SERVERLESS=true
     Environment=OPENSEARCH_REGION=us-east-1
-    ExecStart=/usr/local/bin/opensearch-mcp-server-py --transport streamable-http --port 8080 --host 0.0.0.0
+    ExecStart=/usr/local/bin/opensearch-mcp-server-py --transport streamable-http --port 8081 --host 127.0.0.1
     Restart=always
     RestartSec=5
 
@@ -195,4 +252,15 @@ output "mcp_server_host_address" {
 output "mcp_server_url" {
   value       = var.enable_mcp_server ? "http://${aws_instance.mcp_server[0].private_ip}:8080/mcp" : ""
   description = "OpenSearch MCP Server full URL (for DevOps Agent MCP registration)"
+}
+
+output "mcp_server_api_key_secret_arn" {
+  value       = var.enable_mcp_server ? aws_secretsmanager_secret.mcp_api_key[0].arn : ""
+  description = "Secrets Manager ARN for MCP Server API key"
+}
+
+output "mcp_server_api_key" {
+  value       = var.enable_mcp_server ? random_password.mcp_api_key[0].result : ""
+  description = "MCP Server API key (use in DevOps Agent MCP registration)"
+  sensitive   = true
 }
