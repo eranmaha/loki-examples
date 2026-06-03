@@ -1,64 +1,68 @@
-# DevOps Agent Demo — Investigation Skill
+---
+name: investigate-app-failure
+description: Investigation procedures for application failures in the devops-agent-demo
+  serverless application. Use this skill when CloudWatch alarms fire for Lambda error
+  rates, timeout rates, or when the application returns 5xx errors. Covers IAM permission
+  issues, timeout injection via SSM parameters, DSQL connectivity, and Lambda invocation
+  failures.
+---
+
+# Investigate Application Failure
+
+Use this skill when CloudWatch alarms fire for the devops-agent-demo application,
+indicating Lambda errors, timeouts, or connectivity issues.
 
 ## Context
-You are monitoring a serverless application: `devops-agent-demo-app`
+
 - **Architecture:** CloudFront → API Gateway → Lambda (Node.js 20, arm64) → Aurora DSQL
 - **Region:** us-east-1
 - **Lambda Function:** `devops-agent-demo-app`
 - **Lambda Role:** `devops-agent-demo-lambda-role`
-- **DSQL Cluster:** `zntxnmjv6gxlrwznxhbmxrboza.dsql.us-east-1.on.aws`
-- **SSM Parameter:** `/devops-agent-demo/sleep-seconds` (controls artificial delay)
+- **DSQL Cluster:** Available via environment variable in the Lambda
+- **SSM Parameter:** `/devops-agent-demo/sleep-seconds` (controls artificial delay for fault injection)
 
-## When Alarm Fires
+## Step 1: Identify the alarm
 
-### Step 1: Identify the alarm
-```bash
-aws cloudwatch describe-alarms --alarm-names "devops-agent-demo-error-rate" "devops-agent-demo-timeout-rate" \
-  --query 'MetricAlarms[?StateValue==`ALARM`].{Name:AlarmName,Reason:StateReason}' --output table
-```
+Check which alarms are in ALARM state to understand the failure mode:
+- `devops-agent-demo-error-rate` — Lambda invocation errors exceeding threshold
+- `devops-agent-demo-timeout-rate` — Lambda timeouts exceeding threshold
 
-### Step 2: Check Lambda errors in CloudWatch Logs
-```bash
-aws logs filter-log-events \
-  --log-group-name "/aws/lambda/devops-agent-demo-app" \
-  --start-time $(date -d '5 min ago' +%s000) \
-  --filter-pattern "ERROR" \
-  --query 'events[].message' --output text
-```
+## Step 2: Check Lambda errors in CloudWatch Logs
 
-### Step 3: Diagnose based on error type
+Query the Lambda log group `/aws/lambda/devops-agent-demo-app` for recent ERROR entries
+from the last 5 minutes. Look for patterns in the error messages.
 
-#### If error contains "permission" or "AccessDenied" or "dsql:DbConnectAdmin":
-The Lambda lost its DSQL IAM permission. Fix:
-```bash
-aws iam put-role-policy \
-  --role-name devops-agent-demo-lambda-role \
-  --policy-name dsql-access \
-  --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["dsql:DbConnectAdmin"],"Resource":"arn:aws:dsql:us-east-1:033216807884:cluster/zntxnmjv6gxlrwznxhbmxrboza"}]}'
-```
+## Step 3: Diagnose based on error type
 
-#### If error contains "Task timed out" or duration is near timeout:
-Check for injected sleep:
-```bash
-aws ssm get-parameter --name "/devops-agent-demo/sleep-seconds" --query 'Parameter.Value' --output text
-```
-If value > 0, restore it:
-```bash
-aws ssm put-parameter --name "/devops-agent-demo/sleep-seconds" --value "0" --type String --overwrite
-```
+### Permission / AccessDenied errors
 
-### Step 4: Verify fix
-```bash
-# Invoke Lambda directly to test
-aws lambda invoke --function-name devops-agent-demo-app \
-  --cli-binary-format raw-in-base64-out \
-  --payload '{"rawPath":"/data","requestContext":{"http":{"method":"GET"}},"headers":{}}' \
-  /tmp/test-output.json && cat /tmp/test-output.json
-```
+If logs contain "permission", "AccessDenied", or "dsql:DbConnectAdmin":
+- The Lambda's IAM role has lost its DSQL access policy
+- Remediation: Restore the `dsql:DbConnectAdmin` permission on the Lambda role for the DSQL cluster ARN
 
-### Step 5: Report
-Notify the operator with:
-- What alarm fired
-- Root cause identified
-- Fix applied
-- Verification result
+### Timeout errors
+
+If logs show "Task timed out" or duration approaches the configured timeout:
+1. Check the SSM parameter `/devops-agent-demo/sleep-seconds` for injected delay
+2. If value > 0, this is an injected fault — set it back to "0"
+3. If value is already 0, check DSQL cluster health and network connectivity
+
+### Connection errors
+
+If logs show connection refused, DNS resolution failure, or network timeout to DSQL:
+- Verify the DSQL cluster is active
+- Check if the Lambda has internet access (for DSQL data plane which requires public endpoint)
+- Verify IAM authentication token generation is working
+
+## Step 4: Verify the fix
+
+After applying remediation, invoke the Lambda directly with a test payload targeting
+the `/data` endpoint. Confirm it returns a 200 status with valid transaction data.
+
+## Step 5: Report findings
+
+Summarize:
+1. Which alarm fired and when
+2. Root cause identified (permission loss / timeout injection / connectivity)
+3. Remediation applied
+4. Verification result (success/failure)
