@@ -379,3 +379,8 @@ output "mcp_server_tls_certificate" {
   value       = var.enable_mcp_server ? tls_self_signed_cert.mcp_server[0].cert_pem : ""
   description = "MCP Server TLS certificate (PEM) - paste into DevOps Agent private connection"
 }
+
+output "mcp_server_instance_id" {
+  value       = var.enable_mcp_server ? aws_instance.mcp_server[0].id : ""
+  description = "MCP Server EC2 instance ID (for SSM Session Manager)"
+}
