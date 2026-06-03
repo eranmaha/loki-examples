@@ -96,6 +96,38 @@ terraform apply -var="webhook_secret=YOUR_SECRET"
 
 ## How to Demo
 
+### Post-Install: DevOps Agent Setup
+
+After `terraform apply` completes, configure the DevOps Agent to connect to your MCP server:
+
+1. **Create a Private Connection** (console)
+   - Go to the DevOps Agent console → your space → Settings → Connections
+   - Create a new connection:
+     - Type: Private (VPC)
+     - VPC: Select the VPC created by Terraform (`devops-agent-demo-vpc`)
+     - Subnets: Select the private subnets
+     - Security Group: Select `devops-agent-demo-vpce-sg`
+   - Note: If your MCP server Function URL auth is `NONE`, you can skip the private connection and use a public connection instead (the Lambda Function URL is internet-accessible, while OpenSearch remains private behind the VPC)
+
+2. **Register the MCP Server** (console)
+   - Go to the DevOps Agent console → your space → Tools → MCP Servers
+   - Add a new MCP server:
+     - Name: `opensearch-logs`
+     - URL: `<mcp_server_function_url>/mcp` (from Terraform output)
+     - Transport: Streamable HTTP
+     - Connection: Select the private connection from step 1 (or public if using `NONE` auth)
+     - Auth: AWS IAM SigV4 (if `mcp_server_auth_type = AWS_IAM`)
+
+3. **Upload Investigation Skills** (console)
+   - Go to the DevOps Agent console → your space → Skills
+   - Upload `skills/investigate-app-failure.md` (infra errors)
+   - Upload `skills/investigate-opensearch-app-errors.md` (applicative errors)
+
+4. **Configure Webhook** (console)
+   - Go to the DevOps Agent console → your space → Integrations → Webhooks
+   - Create a generic webhook (should already exist if using an existing space)
+   - Copy the webhook URL + secret into your `terraform.tfvars` / env vars
+
 ### Normal Operation
 1. Open the CloudFront URL (output: `test_page_url`)
 2. Click "Fetch Data" — app queries DSQL, logs transaction to OpenSearch (async)
