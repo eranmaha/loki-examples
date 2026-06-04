@@ -101,6 +101,7 @@ locals {
     dsql           = "com.amazonaws.${var.region}.dsql"
     dsql-data      = "com.amazonaws.${var.region}.dsql-fnh4"
     aoss           = "com.amazonaws.${var.region}.aoss"
+    sts            = "com.amazonaws.${var.region}.sts"
   }
 }
 
