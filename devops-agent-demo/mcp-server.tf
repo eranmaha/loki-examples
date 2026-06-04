@@ -311,6 +311,8 @@ resource "aws_instance" "mcp_server" {
     "Environment=OPENSEARCH_AUTH=iam",
     "Environment=OPENSEARCH_IS_SERVERLESS=true",
     "Environment=OPENSEARCH_REGION=${var.region}",
+    "Environment=AWS_REGION=${var.region}",
+    "Environment=AWS_DEFAULT_REGION=${var.region}",
     "Environment=PYTHONPATH=/opt/mcp-server",
     "ExecStart=/usr/bin/python3.12 -m mcp_server_opensearch --transport stream --port 8081 --host 127.0.0.1",
     "Restart=always",
