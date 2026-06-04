@@ -309,7 +309,7 @@ resource "aws_instance" "mcp_server" {
     "Type=simple",
     "Environment=OPENSEARCH_URL=${aws_opensearchserverless_collection.logs.collection_endpoint}",
     "Environment=OPENSEARCH_AUTH=iam",
-    "Environment=OPENSEARCH_IS_SERVERLESS=true",
+    "Environment=AWS_OPENSEARCH_SERVERLESS=true",
     "Environment=OPENSEARCH_REGION=${var.region}",
     "Environment=AWS_REGION=${var.region}",
     "Environment=AWS_DEFAULT_REGION=${var.region}",
