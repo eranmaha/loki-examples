@@ -343,15 +343,7 @@ resource "aws_opensearchserverless_access_policy" "mcp_data" {
       {
         ResourceType = "collection"
         Resource     = ["collection/${var.project_name}-logs"]
-        Permission   = ["aoss:CreateCollectionItems", "aoss:UpdateCollectionItems", "aoss:DescribeCollectionItems"]
-      },
-      {
-        ResourceType = "index"
-        Resource     = ["index/${var.project_name}-logs/*"]
-        Permission = [
-          "aoss:CreateIndex", "aoss:UpdateIndex", "aoss:DescribeIndex",
-          "aoss:ReadDocument", "aoss:WriteDocument", "aoss:SearchIndex"
-        ]
+        Permission   = ["aoss:*"]
       }
     ]
     Principal = [aws_iam_role.mcp_server_role[0].arn]
