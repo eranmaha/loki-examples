@@ -350,7 +350,7 @@ resource "aws_opensearchserverless_access_policy" "mcp_data" {
         Resource     = ["index/${var.project_name}-logs/*"]
         Permission = [
           "aoss:CreateIndex", "aoss:UpdateIndex", "aoss:DescribeIndex",
-          "aoss:ReadDocument", "aoss:WriteDocument"
+          "aoss:ReadDocument", "aoss:WriteDocument", "aoss:SearchIndex"
         ]
       }
     ]
